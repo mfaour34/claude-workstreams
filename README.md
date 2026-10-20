@@ -231,7 +231,7 @@ At 40%, and every 10% after, the agent is told to checkpoint at the next milesto
 No. Everything lives in a local git repository with no remote, unless you install with `--remote` (see Backup). Lint rejects email addresses and IBANs, and the rules tell the agent never to store secrets or query results.
 
 **Do I really get asked every session?**
-Once, at the start, and the right answer is usually the first option. Pick "No context file" for one-off questions. Spawned sessions with a `Context:` line and subagents are never asked.
+Once, at the start, and the right answer is usually the first option. Pick "No context file" for one-off questions. Spawned sessions with a `Context:` line and subagents are never asked. Neither is a session that was rewound, resumed or forked under a new id: ctx finds the old id in its own hook text in the copied transcript and keeps the workstream (or the "No context file" choice).
 
 **What if two sessions change the same thing?**
 Additions from both are kept. Rewrites of the same line stop with conflict markers in the second session's draft, and nothing is published until it resolves them.

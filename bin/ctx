@@ -893,6 +893,49 @@ previous_workstream_in_folder() {
   fi
 }
 
+sessions_named_in_hook_text() {
+  [ -f "$1" ] || return 0
+  grep -F '"type":"attachment"' "$1" | grep -F 'This session (`' \
+    | jq -r 'select(.attachment.hookEvent == "SessionStart" or .attachment.hookEvent == "UserPromptSubmit") | .attachment | (.content // "" | tostring), (.stdout // "" | tostring)' 2>/dev/null \
+    | grep -oE 'This session \(`[A-Za-z0-9_-]+`\)' \
+    | sed -E 's/^This session \(`([A-Za-z0-9_-]+)`\)$/\1/' \
+    | awk '{ ids[NR] = $0 } END { for (i = NR; i > 0; i--) if (!seen[ids[i]]++) print ids[i] }'
+}
+
+parent_registration() {
+  local id slug
+  for id in $(sessions_named_in_hook_text "$2"); do
+    [ "$id" != "$1" ] || continue
+    slug=$(latest_registration "$id")
+    if [ "$slug" = none ] || { [ -n "$slug" ] && [ -d "$WS_DIR/$slug" ]; }; then
+      printf '%s\t%s\n' "$id" "$slug"
+      return 0
+    fi
+  done
+  return 0
+}
+
+continued_session_context() {
+  if [ "$3" = none ]; then
+    echo "This session (\`$1\`) continues \`$2\` (rewound, resumed or forked), which chose no context file; it stays without one."
+    return 0
+  fi
+  echo "This session (\`$1\`) continues \`$2\` (rewound, resumed or forked) and is now on workstream \`$3\`. Run \`$CTX_BIN show $1\` before continuing; edit only the files in $(draft_dir "$1" "$3")."
+  if draft_has_edits "$2" "$3"; then
+    echo "The previous session id \`$2\` has unpublished edits. Publish them with \`$CTX_BIN checkpoint $2 \"<message>\" $3\`."
+  fi
+}
+
+register_as_continuation() {
+  local parent old slug
+  parent=$(parent_registration "$1" "$3")
+  [ -n "$parent" ] || return 1
+  old=${parent%%"$TAB"*}
+  slug=${parent#*"$TAB"}
+  cmd_register "$1" "$slug" "$2" >/dev/null || return 1
+  continued_session_context "$1" "$old" "$slug"
+}
+
 registered_start_context() {
   echo "This session (\`$1\`) is on workstream \`$2\`. Run \`$CTX_BIN show $1\` and read it before continuing. Edit only the files in $(draft_dir "$1" "$2")."
   if draft_has_edits "$1" "$2"; then
@@ -943,6 +986,8 @@ cmd_hook_start() {
   warnings=$(join_lines "$warnings" "$(push_warning)")
   if [ -n "$slug" ]; then
     context=$(registered_start_context "$session" "$slug")
+  elif [ -z "$(latest_registration "$session")" ] && context=$(register_as_continuation "$session" "$cwd" "$(hook_field "$input" transcript_path)"); then
+    :
   else
     context=$(unregistered_start_context "$session" "$cwd" "$source")
   fi
@@ -1046,6 +1091,8 @@ cmd_hook_prompt() {
       cmd_register "$session" "$declared" "$cwd" >/dev/null
       slug="$declared"
       message="Registered this session (\`$session\`) to workstream \`$declared\` from the Context line. Run \`$CTX_BIN show $session\` before starting; edit only the files in $(draft_dir "$session" "$declared")."
+    elif [ -z "$(latest_registration "$session")" ] && message=$(register_as_continuation "$session" "$cwd" "$transcript"); then
+      slug=$(cmd_current "$session")
     elif [ "$(latest_registration "$session")" != none ]; then
       message=$(shortlist_instruction "$session" "$prompt" "$cwd")
     fi

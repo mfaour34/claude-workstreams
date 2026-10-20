@@ -884,4 +884,70 @@ test_pull_stops_on_conflict_and_changes_nothing() {
   rm -rf "$ORIGIN" "$SECOND"
 }
 
+write_forked_transcript() {
+  local file="$CTX_HOME/transcript-$1.jsonl"
+  jq -cn --arg old "$2" '{type: "attachment", attachment: {type: "hook_success", hookEvent: "SessionStart", hookName: "SessionStart:startup", stdout: ({hookSpecificOutput: {additionalContext: ("ctx v1\nThis session (`" + $old + "`) has no workstream yet.")}} | tojson)}}' > "$file"
+  jq -cn --arg old "$2" '{type: "user", message: {content: [{type: "tool_result", content: ("This session (`" + $old + "-decoy`) is on workstream `beta`")}]}}' >> "$file"
+  jq -cn --arg new "$1" '{type: "attachment", attachment: {type: "hook_additional_context", hookEvent: "UserPromptSubmit", content: ["This session (`" + $new + "`) has no workstream yet."]}}' >> "$file"
+  echo "$file"
+}
+
+test_forked_session_keeps_the_parent_workstream_on_prompt() {
+  local transcript out
+  "$CTX" new alpha "Alpha" old >/dev/null
+  transcript=$(write_forked_transcript new old)
+  out=$(hook_prompt_input new /tmp "Done, I logged in" "$transcript" | "$CTX" hook prompt | additional_context)
+  assert_eq "$("$CTX" current new)" "alpha" "registers the new id to the parent's workstream"
+  assert_contains "$out" "continues \`old\`" "tells the agent which session it continues"
+  assert_not_contains "$out" "New workstream" "does not ask"
+  assert_eq "$([ -d "$CTX_HOME/.drafts/new/alpha" ] && echo yes)" "yes" "creates the new id's draft"
+}
+
+test_forked_session_keeps_the_parent_workstream_on_start() {
+  local transcript out
+  "$CTX" new alpha "Alpha" old >/dev/null
+  transcript=$(write_forked_transcript new old)
+  out=$(jq -cn --arg t "$transcript" '{session_id: "new", cwd: "/tmp", source: "resume", transcript_path: $t}' | "$CTX" hook start | additional_context)
+  assert_eq "$("$CTX" current new)" "alpha" "registers at session start too"
+  assert_contains "$out" "is now on workstream \`alpha\`" "says so"
+  assert_not_contains "$out" "has no workstream yet" "does not show the shortlist rule"
+}
+
+test_forked_session_points_at_the_parent_unpublished_edits() {
+  local transcript out
+  "$CTX" new alpha "Alpha" old >/dev/null
+  echo "- $TODAY old: unpublished" >> "$CTX_HOME/.drafts/old/alpha/log.md"
+  transcript=$(write_forked_transcript new old)
+  out=$(hook_prompt_input new /tmp "go on" "$transcript" | "$CTX" hook prompt | additional_context)
+  assert_contains "$out" "checkpoint old" "tells the agent to publish the old id's draft"
+}
+
+test_forked_session_keeps_an_opt_out() {
+  local transcript out
+  "$CTX" register old none >/dev/null
+  transcript=$(write_forked_transcript new old)
+  out=$(hook_prompt_input new /tmp "go on" "$transcript" | "$CTX" hook prompt | additional_context)
+  assert_eq "$(awk -F'\t' '$1 == "new" { print $2 }' "$CTX_HOME/.sessions.tsv")" "none" "stays without a context file"
+  assert_contains "$out" "chose no context file" "says so"
+}
+
+test_session_ids_outside_hook_text_are_ignored() {
+  local file="$CTX_HOME/transcript.jsonl" out
+  "$CTX" new beta "Beta" old-decoy >/dev/null
+  jq -cn '{type: "user", message: {content: [{type: "tool_result", content: "This session (`old-decoy`) is on workstream `beta`"}]}}' > "$file"
+  out=$(hook_prompt_input new /tmp "hello" "$file" | "$CTX" hook prompt | additional_context)
+  assert_eq "$("$CTX" current new)" "" "does not register from tool output"
+  assert_contains "$out" "New workstream" "asks as usual"
+}
+
+test_forked_session_ignores_a_deleted_parent_workstream() {
+  local transcript out
+  "$CTX" new alpha "Alpha" old >/dev/null
+  rm -rf "$CTX_HOME/workstreams/alpha"
+  transcript=$(write_forked_transcript new old)
+  out=$(hook_prompt_input new /tmp "go on" "$transcript" | "$CTX" hook prompt | additional_context)
+  assert_eq "$("$CTX" current new)" "" "does not register"
+  assert_contains "$out" "New workstream" "asks instead"
+}
+
 run_tests
