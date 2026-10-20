@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/in
 ```
 
 <p align="center">
-  <sub><a href="#how-it-works">How it works</a> &middot; <a href="#install">Install</a> &middot; <a href="#commands">Commands</a> &middot; <a href="#faq">FAQ</a> &middot; <a href="docs/design.md">Design</a></sub>
+  <sub><a href="#how-it-works">How it works</a> &middot; <a href="#install">Install</a> &middot; <a href="#workstream-pane-optional">Pane</a> &middot; <a href="#commands">Commands</a> &middot; <a href="#faq">FAQ</a> &middot; <a href="docs/design.md">Design</a></sub>
 </p>
 
 ---
@@ -114,6 +114,33 @@ Re-running it is safe: nothing is duplicated.
 
 Fast-forwards the source it was installed from, re-runs the installer with the same folder, and runs `ctx doctor`. Open sessions pick up the new version on their next message; the script is swapped atomically, so a hook running at that moment finishes on the old one. If the source has local changes, `update` stops and changes nothing.
 
+## Workstream pane (optional)
+
+A Claude Code plugin that opens a **Workstream** pane beside the conversation, in the Claude desktop app and the fullscreen terminal. It shows:
+
+- the workstream this session is on, or "No workstream yet";
+- the draft: clean, or which files have unpublished edits;
+- the last checkpoint commit and how long ago it was;
+- context used and the threshold of the next nudge;
+- the `ctx show` read view (Goal, Now, Next steps, active decisions and facts, log);
+- the other active and paused workstreams.
+
+Type a message and press **Checkpoint** to run `ctx checkpoint` for this session; the pane shows what `ctx` answered, merge conflicts and lint errors included. Nothing else in the pane writes. It refreshes when a turn ends, after a checkpoint, on **Refresh**, and every 10 seconds. `/workstream` reopens it after you close it.
+
+Install it with the rest:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/install.sh | bash -s -- --with-pane
+```
+
+or `./install.sh --with-pane` from a clone. This adds the source as a local plugin marketplace and installs `workstream-pane@claude-workstreams` from it, so `ctx update` updates the pane too. It needs the `claude` CLI on `PATH` and a Claude Code build that loads plugin hooks modules (tested on 2.1.299). Already have `ctx` installed? Add only the pane from a terminal session:
+
+```
+/plugin install workstream-pane --marketplace mfaour34/claude-workstreams
+```
+
+The pane reads everything through `ctx status <session>` and finds `ctx` from the `SessionStart` hook in `~/.claude/settings.json`, so it needs no configuration.
+
 ## Daily use
 
 1. **Start a session.** Answer the workstream question. The agent reads `ctx show <session>` and works from it.
@@ -142,6 +169,7 @@ Context: ~/.claude/context/workstreams/<slug>
 | `ctx archive <slug> <session> [--force]` | Move a finished workstream to `archive/`; refuses while other sessions are attached |
 | `ctx drop <session>` | Delete a session's drafts |
 | `ctx candidates "<text>" [cwd]` | Best-matching workstreams for a text |
+| `ctx status <session> [transcript]` | Everything the pane shows, as JSON: workstream, read view, draft edits, last checkpoint, context use, next nudge, index. Read-only |
 | `ctx doctor` | Check the installation |
 | `ctx update` | Pull the latest release and reinstall |
 
@@ -205,16 +233,17 @@ Every hook has to answer in under a second on any Mac or Linux box, with nothing
 ./uninstall.sh
 ```
 
-Removes the hooks, restores your original status line, removes the rules block and the skill, and leaves your workstreams (and the `.src` clone of a one-line install) in the context folder.
+Removes the hooks, restores your original status line, removes the rules block, the skill and the pane plugin, and leaves your workstreams (and the `.src` clone of a one-line install) in the context folder.
 
 ## Tests
 
 ```bash
 tests/ctx-test.sh
 tests/install-test.sh
+claude plugin test pane
 ```
 
-CI runs both on Ubuntu and macOS. The images in this README are rendered from `assets/src` with `assets/src/render.sh`, from real `ctx` output.
+CI runs them on Ubuntu and macOS, and validates the plugin and its marketplace with `claude plugin validate`. The images in this README are rendered from `assets/src` with `assets/src/render.sh`, from real `ctx` output.
 
 ## Design
 
