@@ -124,6 +124,8 @@ curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/in
 
 or `./install.sh --remote <url>` from a clone. This sets `origin` on the context folder and turns on the daily push: the first session start of each day pushes in the background, and only when there are commits the remote does not have yet. It never pulls. `ctx push` pushes now.
 
+Already installed? Run the same command again: on an existing folder `--remote` only sets `origin` and turns the daily push on, and your workstreams and history stay as they are. If the remote already holds workstreams from another machine, the two histories are unrelated and `ctx pull` refuses to merge them; point `--remote` at an empty repository instead, or start from one machine's folder.
+
 On another machine, run the same command before anything else. On a fresh folder `--remote` takes the workstreams from the remote, then installs as usual. Run `ctx pull` when you switch machines: it merges the remote into the local copy, keeps additions from both sides, and stops without changing anything if both machines rewrote the same line in a `now.md`. When a daily push is rejected because the other machine pushed first, the next session start says so; `ctx pull` fixes it.
 
 To turn the daily push off again: `git -C <context folder> config ctx.dailypush false`.
