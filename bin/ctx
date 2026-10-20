@@ -3,7 +3,14 @@ set -u
 export LC_ALL=C
 
 CTX_VERSION=1
-CTX_HOME="${CTX_HOME:-$HOME/.claude/context}"
+SCRIPT_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -z "${CTX_HOME:-}" ]; then
+  if [ -d "$SCRIPT_HOME/workstreams" ]; then
+    CTX_HOME="$SCRIPT_HOME"
+  else
+    CTX_HOME="$HOME/.claude/context"
+  fi
+fi
 CTX_BIN="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 WS_DIR="$CTX_HOME/workstreams"
 ARCHIVE_DIR="$CTX_HOME/archive"

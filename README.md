@@ -47,7 +47,7 @@ cd claude-workstreams
 
 The installer:
 
-- copies `ctx` to `~/.claude/context/bin/ctx` and creates the context repository there (set `CTX_HOME` to put it elsewhere);
+- copies `ctx` to `~/.claude/context/bin/ctx` and creates the context repository there (run `CTX_HOME=/path/to/folder ./install.sh` to put it elsewhere; the installed script finds its own folder, so nothing else needs the variable);
 - adds a `SessionStart` and a `UserPromptSubmit` hook to `~/.claude/settings.json`, and wraps your existing status line (it still renders as before);
 - appends a marked rules block to `~/.claude/CLAUDE.md`;
 - installs the `context` skill to `~/.claude/skills/context/`;

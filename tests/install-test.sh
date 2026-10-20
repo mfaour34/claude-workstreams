@@ -80,6 +80,23 @@ assert_eq "$?" "0" "install into an empty home succeeds"
 assert_eq "$(jq -c . "$FAKE_HOME/.claude/settings.json")" "{}" "uninstall leaves empty settings empty"
 rm -rf "$FAKE_HOME"
 
+FAKE_HOME=$(mktemp -d)
+export HOME="$FAKE_HOME"
+export GIT_CONFIG_GLOBAL="$FAKE_HOME/.gitconfig"
+CUSTOM_HOME="$FAKE_HOME/notes/context"
+CTX_HOME="$CUSTOM_HOME" "$REPO_DIR/install.sh" >/dev/null 2>&1
+assert_eq "$?" "0" "install into a custom CTX_HOME succeeds"
+CUSTOM_BIN="$CUSTOM_HOME/bin/ctx"
+assert_eq "$(jq -r '.hooks.UserPromptSubmit[-1].hooks[0].command' "$FAKE_HOME/.claude/settings.json")" "$CUSTOM_BIN hook prompt" "hook points at the custom install"
+assert_eq "$(env -u CTX_HOME "$CUSTOM_BIN" new demo "Demo" s1)" "$CUSTOM_HOME/.drafts/s1/demo" "without CTX_HOME the script uses the folder it is installed in"
+out=$(jq -cn '{session_id: "s1", cwd: "/tmp", source: "compact"}' | env -u CTX_HOME "$CUSTOM_BIN" hook start | jq -r '.hookSpecificOutput.additionalContext')
+assert_contains "$out" "is on workstream \`demo\`" "hooks find the session's workstream in the custom folder"
+assert_eq "$([ -e "$FAKE_HOME/.claude/context" ] && echo created || echo absent)" "absent" "the default folder is not created"
+env -u CTX_HOME "$REPO_DIR/bin/ctx" list >/dev/null
+assert_eq "$([ -e "$REPO_DIR/workstreams" ] && echo polluted || echo clean)" "clean" "running the repo copy does not turn the checkout into a context folder"
+assert_eq "$([ -d "$FAKE_HOME/.claude/context/workstreams" ] && echo default)" "default" "the repo copy falls back to ~/.claude/context"
+rm -rf "$FAKE_HOME"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all passed"
