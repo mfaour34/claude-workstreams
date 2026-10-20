@@ -22,6 +22,7 @@ IDS_DIR="$CTX_HOME/.ids"
 USAGE_DIR="$CTX_HOME/.usage"
 NUDGE_DIR="$CTX_HOME/.nudges"
 STATUSLINE_NEXT="$CTX_HOME/.statusline-next"
+SOURCE_FILE="$CTX_HOME/.source"
 SIZE_CAP_BYTES=30720
 INJECT_CAP_BYTES=8000
 NUDGE_START_PERCENT=40
@@ -194,14 +195,26 @@ git_ctx() {
   fi
 }
 
+gitignore_lines() {
+  printf '%s\n' state.md .sessions.tsv .drafts/ .ids/ .usage/ .nudges/ .lock/ .statusline-next .source .src/ bin/ .DS_Store '*.tmp.*'
+}
+
+missing_gitignore_lines() {
+  gitignore_lines | awk -v file="$CTX_HOME/.gitignore" '
+    BEGIN { while ((getline line < file) > 0) present[line] = 1 }
+    !($0 in present)
+  '
+}
+
 ensure_repo() {
+  local missing
   if [ ! -d "$CTX_HOME/.git" ]; then
     git -C "$CTX_HOME" init -q -b main || die "cannot init git in $CTX_HOME"
   fi
-  if [ ! -e "$CTX_HOME/.gitignore" ]; then
-    printf '%s\n' state.md .sessions.tsv .drafts/ .ids/ .usage/ .nudges/ .lock/ .statusline-next .DS_Store '*.tmp.*' > "$CTX_HOME/.gitignore"
-    git_ctx -C "$CTX_HOME" add .gitignore && git_ctx -C "$CTX_HOME" commit -q -m "Add gitignore"
-  fi
+  missing=$(missing_gitignore_lines)
+  [ -n "$missing" ] || return 0
+  printf '%s\n' "$missing" >> "$CTX_HOME/.gitignore"
+  git_ctx -C "$CTX_HOME" add .gitignore && git_ctx -C "$CTX_HOME" commit -q -m "Update gitignore"
 }
 
 ensure_dirs() {
@@ -915,7 +928,32 @@ cmd_doctor() {
     "ctx v$CTX_VERSION"*) doctor_line "start hook answers" 0 ;;
     *) doctor_line "start hook answers" 1 ;;
   esac
+  if [ -s "$SOURCE_FILE" ]; then
+    echo "info installed from $(cat "$SOURCE_FILE") at $(git -C "$(cat "$SOURCE_FILE")" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  fi
   [ "$DOCTOR_FAILURES" -eq 0 ]
+}
+
+source_is_clean() {
+  git -C "$1" diff --quiet && git -C "$1" diff --cached --quiet
+}
+
+cmd_update() {
+  local source before after
+  source=$(cat "$SOURCE_FILE" 2>/dev/null)
+  [ -n "$source" ] && [ -f "$source/install.sh" ] || die "no install source recorded in $SOURCE_FILE; run install.sh once first"
+  source_is_clean "$source" || die "$source has uncommitted changes; commit or stash them, then run ctx update again"
+  before=$(git -C "$source" rev-parse --short HEAD)
+  git -C "$source" pull -q --ff-only || die "could not fast-forward $source; resolve it there, then run ctx update again"
+  after=$(git -C "$source" rev-parse --short HEAD)
+  CTX_HOME="$CTX_HOME" bash "$source/install.sh" >/dev/null || die "install from $source failed; run CTX_HOME=$CTX_HOME $source/install.sh to see why"
+  if [ "$before" = "$after" ]; then
+    echo "Already up to date ($after)."
+  else
+    echo "Updated from $before to $after."
+  fi
+  echo
+  "$CTX_BIN" doctor
 }
 
 run_hook() {
@@ -968,7 +1006,8 @@ main() {
       ;;
     candidates) cmd_candidates "$@" ;;
     doctor) cmd_doctor ;;
-    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | doctor | hook start | hook prompt | statusline" ;;
+    update) cmd_update ;;
+    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | doctor | update | hook start | hook prompt | statusline" ;;
   esac
 }
 

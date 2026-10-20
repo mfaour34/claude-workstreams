@@ -39,21 +39,40 @@ context getting large ──► nudge: checkpoint, then /clear when the task is 
 
 ## Install
 
+One line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/install.sh | bash
+```
+
+Or from a clone, if you want to read the code first or contribute:
+
 ```bash
 git clone https://github.com/mfaour34/claude-workstreams.git
 cd claude-workstreams
 ./install.sh
 ```
 
+To keep the context folder somewhere other than `~/.claude/context`, prefix either command with `CTX_HOME=/path/to/folder`. The installed script finds its own folder afterwards, so nothing else needs the variable.
+
 The installer:
 
-- copies `ctx` to `~/.claude/context/bin/ctx` and creates the context repository there (run `CTX_HOME=/path/to/folder ./install.sh` to put it elsewhere; the installed script finds its own folder, so nothing else needs the variable);
+- copies `ctx` to `<context folder>/bin/ctx` and creates the context repository there;
 - adds a `SessionStart` and a `UserPromptSubmit` hook to `~/.claude/settings.json`, and wraps your existing status line (it still renders as before);
 - appends a marked rules block to `~/.claude/CLAUDE.md`;
 - installs the `context` skill to `~/.claude/skills/context/`;
-- backs up every file it changes (`*.bak-claude-workstreams-<timestamp>`) and runs `ctx doctor`.
+- records where it was installed from (the one-line install keeps a clone in `<context folder>/.src`);
+- backs up a file only when it actually changes it (`*.bak-claude-workstreams-<timestamp>`), then runs `ctx doctor`.
 
 Re-running it is safe: nothing is duplicated.
+
+## Update
+
+```bash
+~/.claude/context/bin/ctx update
+```
+
+It pulls the latest release into the source it was installed from (fast-forward only), re-runs the installer with the same folder, and runs `ctx doctor`. It prints `Updated from <old> to <new>` or `Already up to date`. Open sessions pick up the new version on their next message; the script is swapped atomically, so a hook that is running at that moment finishes on the old version. If the source checkout has local changes, `update` stops and changes nothing.
 
 ## Daily use
 
@@ -86,6 +105,7 @@ Context: ~/.claude/context/workstreams/<slug>
 | `drop <session>` | Delete a session's drafts |
 | `candidates "<text>" [cwd]` | Best-matching workstreams for a text |
 | `doctor` | Check the installation |
+| `update` | Pull the latest release and reinstall |
 
 The session id appears in the hook messages, and `tail -3 ~/.claude/context/.sessions.tsv` shows the latest ones.
 
@@ -133,7 +153,7 @@ Cloud sessions do not read `~/.claude/settings.json`, so they get no hooks.
 ./uninstall.sh
 ```
 
-It removes the hooks, restores your original status line, removes the rules block and the skill, and leaves your workstreams in `~/.claude/context`.
+It removes the hooks, restores your original status line, removes the rules block and the skill, and leaves your workstreams (and the `.src` clone of a one-line install) in the context folder.
 
 ## Tests
 

@@ -40,8 +40,11 @@ cp "$CLAUDE_DIR/CLAUDE.md" "$FAKE_HOME/CLAUDE.original.md"
 out=$("$REPO_DIR/install.sh" 2>&1)
 assert_eq "$?" "0" "install succeeds"
 assert_contains "$out" "ok   start hook answers" "doctor runs at the end"
+assert_eq "$(cat "$CTX_HOME/.source")" "$REPO_DIR" "records the checkout it was installed from"
+backups_after_first=$(find "$CLAUDE_DIR" -name '*.bak-claude-workstreams-*' | wc -l | tr -d ' ')
 "$REPO_DIR/install.sh" >/dev/null 2>&1
 assert_eq "$?" "0" "second install succeeds"
+assert_eq "$(find "$CLAUDE_DIR" -name '*.bak-claude-workstreams-*' | wc -l | tr -d ' ')" "$backups_after_first" "an unchanged reinstall makes no new backups"
 
 settings="$CLAUDE_DIR/settings.json"
 assert_eq "$(jq --arg c "$CTX_BIN hook start" '[.hooks.SessionStart[].hooks[].command | select(. == $c)] | length' "$settings")" "1" "one start hook after two installs"
@@ -96,6 +99,60 @@ env -u CTX_HOME "$REPO_DIR/bin/ctx" list >/dev/null
 assert_eq "$([ -e "$REPO_DIR/workstreams" ] && echo polluted || echo clean)" "clean" "running the repo copy does not turn the checkout into a context folder"
 assert_eq "$([ -d "$FAKE_HOME/.claude/context/workstreams" ] && echo default)" "default" "the repo copy falls back to ~/.claude/context"
 rm -rf "$FAKE_HOME"
+
+commit_as_tester() { git -C "$1" -c user.name=tester -c user.email=tester@example.com commit -q -am "$2"; }
+
+WORK=$(mktemp -d)
+mkdir -p "$WORK/snapshot"
+(cd "$REPO_DIR" && git ls-files -co --exclude-standard | tar cf - -T -) | (cd "$WORK/snapshot" && tar xf -)
+git -C "$WORK/snapshot" init -q -b main
+git -C "$WORK/snapshot" add -A
+commit_as_tester "$WORK/snapshot" "snapshot"
+git clone -q --bare "$WORK/snapshot" "$WORK/upstream.git"
+git clone -q "$WORK/upstream.git" "$WORK/checkout"
+
+FAKE_HOME="$WORK/home-a"
+mkdir -p "$FAKE_HOME"
+export HOME="$FAKE_HOME"
+export GIT_CONFIG_GLOBAL="$FAKE_HOME/.gitconfig"
+"$WORK/checkout/install.sh" >/dev/null 2>&1
+assert_eq "$?" "0" "install from a clone succeeds"
+UPDATE_BIN="$FAKE_HOME/.claude/context/bin/ctx"
+before_inode=$(ls -i "$UPDATE_BIN" | awk '{print $1}')
+out=$("$UPDATE_BIN" update 2>&1)
+assert_eq "$?" "0" "update with nothing new succeeds"
+assert_contains "$out" "Already up to date" "says it is up to date"
+
+git clone -q "$WORK/upstream.git" "$WORK/dev"
+perl -pi -e 's/^CTX_VERSION=1$/CTX_VERSION=2/' "$WORK/dev/bin/ctx"
+commit_as_tester "$WORK/dev" "release v2"
+git -C "$WORK/dev" push -q origin main
+out=$("$UPDATE_BIN" update 2>&1)
+assert_eq "$?" "0" "update to a new release succeeds"
+assert_contains "$out" "Updated from" "reports the old and new commit"
+assert_contains "$out" "ok   start hook answers" "runs the doctor"
+out=$(jq -cn '{session_id: "s1", cwd: "/tmp", source: "startup"}' | "$UPDATE_BIN" hook start | jq -r '.hookSpecificOutput.additionalContext' | head -1)
+assert_eq "$out" "ctx v2" "the installed script is the new release"
+assert_eq "$([ "$(ls -i "$UPDATE_BIN" | awk '{print $1}')" != "$before_inode" ] && echo replaced)" "replaced" "the script is replaced by a new file, not rewritten in place"
+assert_eq "$(jq --arg c "$UPDATE_BIN hook start" '[.hooks.SessionStart[].hooks[].command | select(. == $c)] | length' "$FAKE_HOME/.claude/settings.json")" "1" "update keeps one start hook"
+
+echo "local edit" >> "$WORK/checkout/README.md"
+out=$("$UPDATE_BIN" update 2>&1)
+assert_eq "$?" "1" "update refuses a source with local changes"
+assert_contains "$out" "uncommitted changes" "says why"
+
+FAKE_HOME="$WORK/home-b"
+mkdir -p "$FAKE_HOME"
+export HOME="$FAKE_HOME"
+export GIT_CONFIG_GLOBAL="$FAKE_HOME/.gitconfig"
+out=$(cd "$WORK" && CTX_REPO_URL="$WORK/upstream.git" bash < "$REPO_DIR/install.sh" 2>&1)
+assert_eq "$?" "0" "one-line install without a checkout succeeds"
+ONE_LINE_HOME="$FAKE_HOME/.claude/context"
+assert_eq "$(cat "$ONE_LINE_HOME/.source")" "$ONE_LINE_HOME/.src" "clones its source into the context folder"
+assert_eq "$(jq -cn '{session_id: "s1", cwd: "/tmp", source: "startup"}' | "$ONE_LINE_HOME/bin/ctx" hook start | jq -r '.hookSpecificOutput.additionalContext' | head -1)" "ctx v2" "installs the latest release"
+assert_contains "$("$ONE_LINE_HOME/bin/ctx" update 2>&1)" "Already up to date" "update works after a one-line install"
+assert_eq "$(git -C "$ONE_LINE_HOME" status --short)" "" "the context repository ignores the source clone and the script"
+rm -rf "$WORK"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
