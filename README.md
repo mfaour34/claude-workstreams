@@ -125,6 +125,8 @@ A Claude Code plugin that opens a **Workstream** pane beside the conversation, i
 
 Type a message and press **Checkpoint** to run `ctx checkpoint` for this session; the pane shows what `ctx` answered, merge conflicts and lint errors included. Nothing else in the pane writes. It refreshes when a turn ends, after a checkpoint, on **Refresh**, and every 10 seconds. `/workstream` reopens it after you close it.
 
+Closed the pane? A band above the prompt shows the workstream and the draft state, with an **Open workstream** button; `/workstream` works too.
+
 Install it with the rest:
 
 ```bash
