@@ -114,6 +114,27 @@ Re-running it is safe: nothing is duplicated.
 
 Fast-forwards the source it was installed from, re-runs the installer with the same folder, and runs `ctx doctor`. Open sessions pick up the new version on their next message; the script is swapped atomically, so a hook running at that moment finishes on the old one. If the source has local changes, `update` stops and changes nothing.
 
+## Backup and a second machine (optional)
+
+The context folder is a plain git repository, and the local copy is always the one that counts. Give it a private remote to back it up:
+
+```bash
+cd ~/.claude/context
+git remote add origin git@github.com:<you>/claude-context.git
+git push -u origin main
+```
+
+From then on the first session start of each day pushes in the background, and only if there are commits the remote does not have yet. It never pulls. `ctx push` pushes now.
+
+On another machine, clone the remote into the context folder before you install, so the installer adopts it:
+
+```bash
+git clone git@github.com:<you>/claude-context.git ~/.claude/context
+curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/install.sh | bash
+```
+
+Run `ctx pull` when you switch machines. It merges the remote into the local copy: additions from both sides are kept, and if both machines rewrote the same line in a `now.md` it stops and changes nothing. When a daily push is rejected because the other machine pushed first, the next session start says so; `ctx pull` fixes it and the next session start pushes the merge.
+
 ## Workstream pane (optional)
 
 A Claude Code plugin that opens a **Workstream** pane beside the conversation, in the Claude desktop app and the fullscreen terminal. Under a header with the session's workstream (or "No workstream yet"), it has four sections:
@@ -172,6 +193,8 @@ Context: ~/.claude/context/workstreams/<slug>
 | `ctx status <session> [transcript]` | Everything the pane shows, as JSON: workstream, read view, draft edits, last checkpoint, context use, next nudge, index. Read-only |
 | `ctx doctor` | Check the installation |
 | `ctx update` | Pull the latest release and reinstall |
+| `ctx push` | Push unpushed commits to `origin` now (session start does it once a day) |
+| `ctx pull` | Merge `origin` into the local copy; stops without changes on a conflict |
 
 All commands live at `~/.claude/context/bin/ctx`. The session id appears in the hook messages; `tail -3 ~/.claude/context/.sessions.tsv` shows the latest ones.
 
@@ -210,7 +233,7 @@ At 40%, and every 10% after, the agent is told to checkpoint at the next milesto
 ## FAQ
 
 **Does it send my notes anywhere?**
-No. Everything lives in a local git repository with no remote. Lint rejects email addresses and IBANs, and the rules tell the agent never to store secrets or query results.
+No. Everything lives in a local git repository with no remote, unless you add one (see Backup). Lint rejects email addresses and IBANs, and the rules tell the agent never to store secrets or query results.
 
 **Do I really get asked every session?**
 Once, at the start, and the right answer is usually the first option. Pick "No context file" for one-off questions. Spawned sessions with a `Context:` line and subagents are never asked.

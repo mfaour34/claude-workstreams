@@ -23,6 +23,7 @@ USAGE_DIR="$CTX_HOME/.usage"
 NUDGE_DIR="$CTX_HOME/.nudges"
 STATUSLINE_NEXT="$CTX_HOME/.statusline-next"
 SOURCE_FILE="$CTX_HOME/.source"
+PUSH_FILE="$CTX_HOME/.push"
 SIZE_CAP_BYTES=30720
 INJECT_CAP_BYTES=8000
 NUDGE_START_PERCENT=40
@@ -196,25 +197,41 @@ git_ctx() {
 }
 
 gitignore_lines() {
-  printf '%s\n' state.md .sessions.tsv .drafts/ .ids/ .usage/ .nudges/ .lock/ .statusline-next .source .src/ bin/ .DS_Store '*.tmp.*'
+  printf '%s\n' state.md .sessions.tsv .drafts/ .ids/ .usage/ .nudges/ .lock/ .statusline-next .source .push .src/ bin/ .DS_Store '*.tmp.*'
 }
 
-missing_gitignore_lines() {
-  gitignore_lines | awk -v file="$CTX_HOME/.gitignore" '
+gitattributes_lines() {
+  local name
+  for name in $APPEND_FILES; do
+    echo "$name merge=union"
+  done
+}
+
+missing_lines() {
+  awk -v file="$1" '
     BEGIN { while ((getline line < file) > 0) present[line] = 1 }
     !($0 in present)
   '
 }
 
 ensure_repo() {
-  local missing
+  local missing changed
   if [ ! -d "$CTX_HOME/.git" ]; then
     git -C "$CTX_HOME" init -q -b main || die "cannot init git in $CTX_HOME"
   fi
-  missing=$(missing_gitignore_lines)
-  [ -n "$missing" ] || return 0
-  printf '%s\n' "$missing" >> "$CTX_HOME/.gitignore"
-  git_ctx -C "$CTX_HOME" add .gitignore && git_ctx -C "$CTX_HOME" commit -q -m "Update gitignore"
+  changed=""
+  missing=$(gitignore_lines | missing_lines "$CTX_HOME/.gitignore")
+  if [ -n "$missing" ]; then
+    printf '%s\n' "$missing" >> "$CTX_HOME/.gitignore"
+    changed="gitignore"
+  fi
+  missing=$(gitattributes_lines | missing_lines "$CTX_HOME/.gitattributes")
+  if [ -n "$missing" ]; then
+    printf '%s\n' "$missing" >> "$CTX_HOME/.gitattributes"
+    changed="${changed:+$changed and }gitattributes"
+  fi
+  [ -n "$changed" ] || return 0
+  git_ctx -C "$CTX_HOME" add .gitignore .gitattributes && git_ctx -C "$CTX_HOME" commit -q -m "Update $changed"
 }
 
 ensure_dirs() {
@@ -731,6 +748,113 @@ prune_drafts() {
   return 0
 }
 
+current_branch() {
+  git -C "$CTX_HOME" branch --show-current 2>/dev/null
+}
+
+has_origin() {
+  git -C "$CTX_HOME" remote get-url origin >/dev/null 2>&1
+}
+
+unpushed_commit_count() {
+  local branch
+  branch=$(current_branch)
+  if [ -z "$branch" ] || ! git -C "$CTX_HOME" rev-parse -q --verify HEAD >/dev/null; then
+    echo 0
+  elif git -C "$CTX_HOME" rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null; then
+    git -C "$CTX_HOME" rev-list --count "origin/$branch..HEAD"
+  else
+    git -C "$CTX_HOME" rev-list --count HEAD
+  fi
+}
+
+push_is_due() {
+  has_origin || return 1
+  [ "$(cut -f1 "$PUSH_FILE" 2>/dev/null)" != "$(date +%Y-%m-%d)" ] || return 1
+  [ "$(unpushed_commit_count)" -gt 0 ]
+}
+
+record_push() {
+  printf '%s\t%s\n' "$(date +%Y-%m-%d)" "$1" > "$PUSH_FILE"
+}
+
+cmd_push() {
+  local branch count output
+  has_origin || { echo "No origin remote; nothing to push."; return 0; }
+  count=$(unpushed_commit_count)
+  if [ "$count" -eq 0 ]; then
+    echo "Nothing to push."
+    return 0
+  fi
+  branch=$(current_branch)
+  if output=$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes}" git -C "$CTX_HOME" push -q origin "$branch" 2>&1); then
+    record_push ok
+    echo "Pushed $count commit(s) to origin/$branch."
+    return 0
+  fi
+  case "$output" in
+    *rejected*|*non-fast-forward*|*"fetch first"*)
+      record_push rejected
+      die "origin/$branch has commits this machine lacks. Run: $CTX_BIN pull, then $CTX_BIN push"
+      ;;
+  esac
+  record_push failed
+  die "push to origin failed:
+$output"
+}
+
+start_daily_push() {
+  [ "${CTX_DAILY_PUSH:-1}" = 1 ] || return 0
+  push_is_due || return 0
+  record_push started
+  nohup "$CTX_BIN" push >/dev/null 2>&1 </dev/null &
+}
+
+push_warning() {
+  local day result
+  [ -s "$PUSH_FILE" ] && has_origin || return 0
+  IFS="$TAB" read -r day result < "$PUSH_FILE"
+  case "$result" in
+    rejected) echo "The daily push of the context repository was rejected on $day: origin has commits from another machine. Tell the user to run \`$CTX_BIN pull\`." ;;
+    failed) echo "The daily push of the context repository failed on $day. \`$CTX_BIN push\` shows why." ;;
+  esac
+}
+
+clear_rejected_push() {
+  if [ "$(cut -f2 "$PUSH_FILE" 2>/dev/null)" = rejected ]; then
+    rm -f "$PUSH_FILE"
+  fi
+}
+
+cmd_pull() {
+  local branch before count
+  has_origin || die "no origin remote; add one with: git -C $CTX_HOME remote add origin <url>"
+  branch=$(current_branch)
+  [ -n "$branch" ] || die "$CTX_HOME is not on a branch"
+  acquire_lock
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$CTX_HOME" fetch -q origin "$branch" 2>/dev/null; then
+    release_lock
+    die "could not fetch origin/$branch"
+  fi
+  if git -C "$CTX_HOME" merge-base --is-ancestor "origin/$branch" HEAD 2>/dev/null; then
+    clear_rejected_push
+    release_lock
+    echo "Already up to date."
+    return 0
+  fi
+  before=$(git -C "$CTX_HOME" rev-parse HEAD)
+  if ! git_ctx -C "$CTX_HOME" merge -q --no-edit "origin/$branch" >/dev/null 2>&1; then
+    git -C "$CTX_HOME" merge --abort 2>/dev/null
+    release_lock
+    die "origin/$branch does not merge cleanly; nothing was changed. Merge by hand: git -C $CTX_HOME merge origin/$branch"
+  fi
+  count=$(git -C "$CTX_HOME" rev-list --count "$before..origin/$branch")
+  render_state
+  clear_rejected_push
+  release_lock
+  echo "Pulled $count commit(s) from origin/$branch."
+}
+
 hook_field() {
   printf '%s' "$1" | jq -r --arg key "$2" '.[$key] // empty' 2>/dev/null
 }
@@ -810,7 +934,9 @@ cmd_hook_start() {
     refresh_draft "$session" "$slug"
   fi
   render_state
+  start_daily_push
   release_lock
+  warnings=$(join_lines "$warnings" "$(push_warning)")
   if [ -n "$slug" ]; then
     context=$(registered_start_context "$session" "$slug")
   else
@@ -967,11 +1093,17 @@ cmd_doctor() {
     lint_dir "${dir%/}" >/dev/null
     doctor_line "lint $(basename "$dir")" $?
   done
-  probe=$(printf '{"session_id":"doctor-probe","cwd":"/","source":"startup"}' | "$CTX_BIN" hook start | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
+  probe=$(printf '{"session_id":"doctor-probe","cwd":"/","source":"startup"}' | CTX_DAILY_PUSH=0 "$CTX_BIN" hook start | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
   case "$probe" in
     "ctx v$CTX_VERSION"*) doctor_line "start hook answers" 0 ;;
     *) doctor_line "start hook answers" 1 ;;
   esac
+  if has_origin && [ -s "$PUSH_FILE" ]; then
+    case "$(cut -f2 "$PUSH_FILE")" in
+      ok|started) echo "info last daily push $(tr '\t' ' ' < "$PUSH_FILE")" ;;
+      *) doctor_line "last daily push ($(tr '\t' ' ' < "$PUSH_FILE")); run ctx push to see why" 1 ;;
+    esac
+  fi
   if [ -s "$SOURCE_FILE" ]; then
     echo "info installed from $(cat "$SOURCE_FILE") at $(git -C "$(cat "$SOURCE_FILE")" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   fi
@@ -1055,7 +1187,9 @@ main() {
       ;;
     doctor) cmd_doctor ;;
     update) cmd_update ;;
-    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | status | doctor | update | hook start | hook prompt | statusline" ;;
+    push) cmd_push ;;
+    pull) cmd_pull ;;
+    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | status | doctor | update | push | pull | hook start | hook prompt | statusline" ;;
   esac
 }
 

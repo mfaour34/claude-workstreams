@@ -751,4 +751,123 @@ test_status_is_read_only() {
   assert_eq "$(git -C "$CTX_HOME" status --porcelain | grep -v state.md)" "" "leaves the repository clean"
 }
 
+add_origin() {
+  ORIGIN=$(mktemp -d)
+  git init -q --bare -b main "$ORIGIN"
+  git -C "$CTX_HOME" remote add origin "$ORIGIN"
+}
+
+origin_head() {
+  git -C "$ORIGIN" rev-parse --short main 2>/dev/null
+}
+
+local_head() {
+  git -C "$CTX_HOME" rev-parse --short HEAD
+}
+
+wait_for_push_result() {
+  local tries=0
+  while [ "$(cut -f2 "$CTX_HOME/.push" 2>/dev/null)" = started ] && [ "$tries" -lt 50 ]; do
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+}
+
+edit_and_checkpoint() {
+  echo "- $TODAY s1: $2" >> "$CTX_HOME/.drafts/s1/$1/log.md"
+  "$CTX" checkpoint s1 "$2" "$1" >/dev/null
+}
+
+second_machine() {
+  SECOND=$(mktemp -d)
+  git clone -q "$ORIGIN" "$SECOND"
+}
+
+test_push_without_origin_does_nothing() {
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  assert_eq "$("$CTX" push)" "No origin remote; nothing to push." "says there is no remote"
+  hook_start_input s1 /tmp startup | "$CTX" hook start >/dev/null
+  assert_eq "$([ -e "$CTX_HOME/.push" ] && echo attempted || echo skipped)" "skipped" "session start does not try"
+}
+
+test_session_start_pushes_once_a_day_when_ahead() {
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  add_origin
+  CTX_SETTINGS=/nonexistent "$CTX" doctor >/dev/null
+  sleep 0.3
+  assert_eq "$(origin_head)" "" "doctor's hook probe does not push"
+  hook_start_input s1 /tmp startup | "$CTX" hook start >/dev/null
+  wait_for_push_result
+  assert_eq "$(origin_head)" "$(local_head)" "first session start of the day pushes"
+  assert_eq "$(cat "$CTX_HOME/.push")" "$TODAY${TAB}ok" "records the day and the result"
+  edit_and_checkpoint alpha "second change"
+  hook_start_input s1 /tmp startup | "$CTX" hook start >/dev/null
+  sleep 0.3
+  assert_eq "$(git -C "$CTX_HOME" rev-list --count origin/main..HEAD)" "1" "a later session start the same day leaves the new commit local"
+  printf '2000-01-01\tok\n' > "$CTX_HOME/.push"
+  hook_start_input s1 /tmp startup | "$CTX" hook start >/dev/null
+  wait_for_push_result
+  assert_eq "$(origin_head)" "$(local_head)" "the next day pushes it"
+  rm -rf "$ORIGIN"
+}
+
+test_session_start_does_not_push_without_changes() {
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  add_origin
+  "$CTX" push >/dev/null
+  printf '2000-01-01\tok\n' > "$CTX_HOME/.push"
+  hook_start_input s1 /tmp startup | "$CTX" hook start >/dev/null
+  sleep 0.3
+  assert_eq "$(cat "$CTX_HOME/.push")" "2000-01-01${TAB}ok" "no attempt when nothing is unpushed"
+  assert_eq "$("$CTX" push)" "Nothing to push." "manual push says so"
+  rm -rf "$ORIGIN"
+}
+
+test_rejected_push_asks_for_pull_and_pull_merges_both_machines() {
+  local out
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  add_origin
+  "$CTX" push >/dev/null
+  second_machine
+  echo "- $TODAY other: from the second machine" >> "$SECOND/workstreams/alpha/log.md"
+  git -C "$SECOND" -c user.name=t -c user.email=t@example.com commit -qam "alpha: second machine"
+  git -C "$SECOND" push -q origin main
+  edit_and_checkpoint alpha "from the first machine"
+  out=$("$CTX" push 2>&1)
+  assert_eq "$?" "1" "push fails"
+  assert_contains "$out" "pull" "tells you to pull"
+  assert_eq "$(cut -f2 "$CTX_HOME/.push")" "rejected" "records the rejection"
+  out=$(hook_start_input s1 /tmp startup | "$CTX" hook start | additional_context)
+  assert_contains "$out" "rejected" "session start reports it"
+  out=$("$CTX" pull)
+  assert_eq "$?" "0" "pull succeeds"
+  assert_contains "$out" "Pulled 1 commit(s)" "counts the pulled commits"
+  assert_contains "$(cat "$CTX_HOME/workstreams/alpha/log.md")" "from the second machine" "keeps the other machine's entry"
+  assert_contains "$(cat "$CTX_HOME/workstreams/alpha/log.md")" "from the first machine" "keeps this machine's entry"
+  assert_eq "$([ -e "$CTX_HOME/.push" ] && echo kept || echo cleared)" "cleared" "clears the rejection so the next session start pushes"
+  assert_contains "$("$CTX" push)" "Pushed" "push goes through after the pull"
+  assert_eq "$("$CTX" pull)" "Already up to date." "a second pull has nothing to do"
+  rm -rf "$ORIGIN" "$SECOND"
+}
+
+test_pull_stops_on_conflict_and_changes_nothing() {
+  local before out
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  add_origin
+  "$CTX" push >/dev/null
+  second_machine
+  sed -i.bak 's/^summary: .*/summary: second machine/' "$SECOND/workstreams/alpha/now.md" && rm "$SECOND/workstreams/alpha/now.md.bak"
+  git -C "$SECOND" -c user.name=t -c user.email=t@example.com commit -qam "alpha: summary"
+  git -C "$SECOND" push -q origin main
+  sed -i.bak 's/^summary: .*/summary: first machine/' "$CTX_HOME/.drafts/s1/alpha/now.md" && rm "$CTX_HOME/.drafts/s1/alpha/now.md.bak"
+  "$CTX" checkpoint s1 "summary" >/dev/null
+  before=$(local_head)
+  out=$("$CTX" pull 2>&1)
+  assert_eq "$?" "1" "pull fails"
+  assert_contains "$out" "nothing was changed" "says nothing changed"
+  assert_eq "$(local_head)" "$before" "keeps the local head"
+  assert_eq "$(git -C "$CTX_HOME" status --porcelain)" "" "leaves no merge in progress"
+  rm -rf "$ORIGIN" "$SECOND"
+}
+
 run_tests
