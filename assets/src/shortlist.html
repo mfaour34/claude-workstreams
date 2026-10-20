@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="card.css">
+<style>
+.prompt { color: var(--muted); font-size: 14px; margin: -6px 0 18px; }
+.q { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--panel); }
+.q .head { padding: 16px 20px; font-size: 15px; border-bottom: 1px solid var(--line); background: #1c1916; }
+.opt { display: flex; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+.opt:last-child { border-bottom: 0; }
+.radio { width: 15px; height: 15px; border-radius: 50%; border: 2px solid var(--faint); margin-top: 2px; flex: none; }
+.opt.sel .radio { border-color: var(--accent-a); background: radial-gradient(circle, var(--accent-a) 0 4px, transparent 5px); }
+.opt .t { font-size: 15px; }
+.opt .d { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.tag { color: var(--accent-b); }
+</style></head><body>
+<div class="card">
+  <div class="eyebrow">Session start</div>
+  <h1>Every session starts by asking<br>which <span class="grad">workstream</span> it is.</h1>
+  <div class="prompt">&gt; why are the october invoice totals off</div>
+  <div class="q">
+    <div class="head">Which workstream does this session belong to?</div>
+    <div class="opt sel"><div class="radio"></div><div><div class="t">invoice-export</div><div class="d">Monthly CSV export to the accounting tool; retries live, totals mismatch open</div></div></div>
+    <div class="opt"><div class="radio"></div><div><div class="t">docs-site</div><div class="d">Docs site <span class="tag">(last used in this folder)</span></div></div></div>
+    <div class="opt"><div class="radio"></div><div><div class="t">New workstream</div><div class="d">Propose a short kebab-case slug</div></div></div>
+    <div class="opt"><div class="radio"></div><div><div class="t">No context file</div><div class="d">One-off; nothing is saved</div></div></div>
+    <div class="opt"><div class="radio"></div><div><div class="t">Other</div></div></div>
+  </div>
+  <div class="foot">The workstream last used in the same folder comes first, then the best word matches for your first message. Prompts that carry a Context: line skip the question, so spawned sessions are never interrupted.</div>
+</div>
+</body></html>

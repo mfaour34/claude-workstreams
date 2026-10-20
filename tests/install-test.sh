@@ -2,6 +2,7 @@
 set -u
 export LC_ALL=C
 
+unset CTX_HOME CLAUDE_DIR CTX_SETTINGS CTX_REPO_URL
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=0
 

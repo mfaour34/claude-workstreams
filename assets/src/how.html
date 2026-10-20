@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="card.css"></head><body>
+<div class="card">
+  <div class="eyebrow">How it works</div>
+  <h1>Work from a file on disk.<br>Treat the chat as <span class="grad">disposable</span>.</h1>
+  <div class="rows">
+    <div class="row"><div class="num">1</div><div class="label">A session starts<small>a hook asks which workstream it belongs to</small></div><div class="note">shortlist</div></div>
+    <div class="row"><div class="num">2</div><div class="label">It reads ctx show<small>goal, now, next steps, active decisions and facts</small></div><div class="note">~4k tokens</div></div>
+    <div class="row"><div class="num">3</div><div class="label">It works in a private draft<small>never in the shared copy</small></div><div class="note">no overwrites</div></div>
+    <div class="row"><div class="num">4</div><div class="label">At each milestone: ctx checkpoint<small>git merge-file, lint, commit</small></div><div class="note">full history</div></div>
+    <div class="row"><div class="num">5</div><div class="label">Context passes 40%<small>a nudge to checkpoint, then /clear once the task is done</small></div><div class="note">never mid-task</div></div>
+    <div class="row hl"><div class="num">6</div><div class="label">You /clear<small>the same workstream is offered first</small></div><div class="note">resume, don't re-explain</div></div>
+  </div>
+  <div class="foot">Two hooks, one bash script, one git repository on your machine. No daemon, no database, no network.</div>
+</div>
+</body></html>

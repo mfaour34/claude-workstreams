@@ -1,0 +1,24 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="card.css">
+<style>
+.block { border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; background: var(--panel); }
+.block .eyebrow { font-size: 11.5px; margin-bottom: 10px; }
+.term { background: #0b0a09; }
+</style></head><body>
+<div class="card">
+  <div class="eyebrow">Facts and decisions</div>
+  <h1>Every fact has a source.<br>Every decision has a <span class="grad">date</span>.</h1>
+
+  <div class="block"><div class="eyebrow">decisions.md</div><div class="mono-block"><span class="strike">- D1 | 2026-10-08 | </span><span class="warn">replaced by D3 on 2026-10-16</span><span class="strike"> | Export from the read replica.</span>
+- <span class="accent">D3</span> | 2026-10-16 | active | Export from the primary after 02:00.
+  Why: the replica lags up to 40 min at month end. Sources: <span class="chip">S1</span></div></div>
+
+  <div class="block"><div class="eyebrow">facts.md + sources.md</div><div class="mono-block">- <span class="accent">F1</span> | checked 2026-10-16 | <span class="chip">S1</span> | active | The replica lags up to 40 min at month end
+- <span class="accent">S1</span> | sql | checked 2026-10-16 | queries/S1.sql (replica lag, prod read-only)</div></div>
+
+  <div class="block term"><div class="eyebrow">A fact with no source never lands</div><div class="mono-block"><span class="muted">$ ctx checkpoint s-7f3a "totals fixed"</span>
+ctx: lint failed; nothing was published.
+<span class="warn">facts.md:4: F4: cite at least one source</span></div></div>
+
+  <div class="foot">Replaced decisions stay, marked with their replacement and date. Lint also rejects dangling replacements, duplicate ids, merge markers, email addresses and IBANs.</div>
+</div>
+</body></html>

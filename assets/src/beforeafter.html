@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="card.css">
+<style>
+.section { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px; }
+.wall { font-size: 12px; line-height: 1.6; color: var(--ghost); margin: 14px 0 30px; }
+.sep { border-top: 1px solid var(--line); margin: 6px 0 26px; }
+.arrow { color: var(--accent-a); font-style: italic; }
+.srcgrid { display: grid; grid-template-columns: auto 1fr; column-gap: 18px; font-size: 13.5px; line-height: 1.75; white-space: pre; }
+</style></head><body>
+<div class="card">
+  <div class="eyebrow">"Where was I?"</div>
+  <h1>Compaction keeps a summary.<br>A workstream keeps <span class="grad">the facts</span>.</h1>
+
+  <div class="section"><div class="eyebrow">After compaction</div><div class="big faint">a paragraph</div></div>
+  <div class="wall">The user and the assistant worked on the invoice export. Several approaches were discussed for where to read the data from, including the read replica, and a decision was made to change it because of an issue at month end. The assistant investigated why the October totals did not match and found a problem related to credit notes, then drafted a fix. Some numbers were checked along the way. Remaining work includes merging the fix and possibly adding a check...</div>
+
+  <div class="sep"></div>
+
+  <div class="section"><div class="eyebrow">ctx show</div><div class="big">sourced</div></div>
+  <div class="mono-block" style="margin-top:14px">- October totals are off by 0.3%: credit notes are exported twice.
+- <span class="accent">D3</span> | 2026-10-16 | active | Export from the primary after 02:00.
+  Why: the replica lags up to 40 min at month end. Sources: <span class="chip">S1</span>
+- <span class="accent">F2</span> | checked 2026-10-19 | <span class="chip">S2</span> | active | Credit notes appear twice
+  when an invoice is corrected after export
+</div>
+  <div class="srcgrid">
+    <div>- <span class="accent">S2</span> | code | origin/main@9c41e2a:src/export/credit-notes.ts:57</div><div class="arrow">&larr; re-open it</div>
+    <div>- <span class="accent">S1</span> | sql  | queries/S1.sql</div><div class="arrow">&larr; re-run it</div>
+  </div>
+
+  <div class="foot">Which decision, when, why, and what proved it. A new session can check the claim instead of trusting it.</div>
+</div>
+</body></html>

@@ -1,0 +1,34 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="card.css">
+<style>
+.flow { display: flex; align-items: center; gap: 14px; margin: 4px 0 30px; font-size: 14px; }
+.box { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 12px 14px; text-align: center; line-height: 1.5; }
+.box small { display: block; color: var(--muted); font-size: 12px; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.to { color: var(--faint); font-size: 20px; }
+.merge { border-color: #24524a; }
+</style></head><body>
+<div class="card">
+  <div class="eyebrow">Parallel sessions</div>
+  <h1>Two sessions, one workstream,<br><span class="grad">nothing overwritten</span>.</h1>
+  <div class="flow">
+    <div class="stack">
+      <div class="box">session A<small>.drafts/A/invoice-export</small></div>
+      <div class="box">session B<small>.drafts/B/invoice-export</small></div>
+    </div>
+    <div class="to">&rarr;</div>
+    <div class="box merge">ctx checkpoint<small>git merge-file draft, base, main</small></div>
+    <div class="to">&rarr;</div>
+    <div class="box">lint<small>on the merged result</small></div>
+    <div class="to">&rarr;</div>
+    <div class="box">main + commit<small>workstreams/invoice-export</small></div>
+  </div>
+  <div class="rows">
+    <div class="row"><div class="label">Both add decisions, facts or log lines</div><div class="note">both kept (union merge)</div></div>
+    <div class="row"><div class="label">Both mint a new fact id</div><div class="note">F7 and F8, never two F7s</div></div>
+    <div class="row"><div class="label">Both rewrite the same line of Now</div><div class="note">stops with markers, publishes nothing</div></div>
+    <div class="row"><div class="label">One id ends up with two statuses</div><div class="note">lint blocks it</div></div>
+    <div class="row"><div class="label">Archive while another session is attached</div><div class="note">refused</div></div>
+  </div>
+  <div class="foot">Every row above is a test in tests/ctx-test.sh.</div>
+</div>
+</body></html>
