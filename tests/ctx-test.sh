@@ -719,4 +719,36 @@ test_doctor_passes_on_full_install_and_names_gaps() {
   assert_contains "$out" "info no original status line" "says so"
 }
 
+test_status_reports_workstream_draft_checkpoint_and_nudge() {
+  local out draft="$CTX_HOME/.drafts/s1/alpha"
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  write_workstream beta "Beta" "Beta summary" - 2026-10-01 paused
+  out=$("$CTX" status s1)
+  assert_eq "$(jq -r .workstream <<<"$out")" "alpha" "names the workstream"
+  assert_eq "$(jq -r '.draft.changed | length' <<<"$out")" "0" "a fresh draft is clean"
+  assert_eq "$(jq -r .last_checkpoint.subject <<<"$out")" "alpha: create" "last checkpoint subject"
+  assert_contains "$(jq -r .show <<<"$out")" "# Workstream alpha" "carries the show view"
+  assert_eq "$(jq -r '[.workstreams[] | .slug + ":" + .status] | join(" ")' <<<"$out")" "alpha:active beta:paused" "lists every workstream with its status"
+  assert_eq "$(jq -r .context.next_nudge_percent <<<"$out")" "40" "first nudge at 40%"
+  echo '- 2026-10-20 s1: edit' >> "$draft/log.md"
+  echo 'x' > "$draft/new.md"
+  assert_eq "$("$CTX" status s1 | jq -r '.draft.changed | join(" ")')" "log.md new.md" "names edited and added files"
+  set_usage s1 47
+  mkdir -p "$CTX_HOME/.nudges" && echo 0 > "$CTX_HOME/.nudges/s1"
+  out=$("$CTX" status s1)
+  assert_eq "$(jq -c .context <<<"$out")" '{"percent":47,"next_nudge_percent":50}' "context use and the next threshold"
+  out=$("$CTX" status s2)
+  assert_eq "$?:$(jq -c '[.workstream, .draft, .show, .last_checkpoint]' <<<"$out")" "0:[null,null,null,null]" "an unregistered session is all null"
+  "$CTX" status 'bad id' >/dev/null 2>&1
+  assert_eq "$?" "1" "rejects a malformed session id"
+}
+
+test_status_is_read_only() {
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  rm "$CTX_HOME/state.md"
+  "$CTX" status s1 >/dev/null
+  assert_eq "$([ -e "$CTX_HOME/state.md" ] && echo written || echo untouched)" "untouched" "does not render the index"
+  assert_eq "$(git -C "$CTX_HOME" status --porcelain | grep -v state.md)" "" "leaves the repository clean"
+}
+
 run_tests

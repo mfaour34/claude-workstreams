@@ -59,12 +59,19 @@ uninstall_skill() {
   rmdir "$(dirname "$SKILL")" 2>/dev/null || true
 }
 
+uninstall_pane() {
+  command -v claude >/dev/null 2>&1 || return 0
+  claude plugin uninstall workstream-pane@claude-workstreams >/dev/null 2>&1 || true
+  claude plugin marketplace remove claude-workstreams >/dev/null 2>&1 || true
+}
+
 main() {
   command -v jq >/dev/null 2>&1 || { echo "uninstall: jq is required" >&2; exit 1; }
   uninstall_settings
   uninstall_rules
   uninstall_skill
-  echo "Removed the hooks, status line wrapper, rules block and skill."
+  uninstall_pane
+  echo "Removed the hooks, status line wrapper, rules block, skill and workstream pane."
   echo "Your workstreams are still in $CTX_HOME. Delete that folder yourself if you no longer want them."
 }
 

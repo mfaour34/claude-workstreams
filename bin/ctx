@@ -431,6 +431,50 @@ cmd_show() {
   print_section "Log (last 5)" "$(grep -v '^[[:space:]]*$' "$dir/log.md" | tail -5)"
 }
 
+draft_changed_files() {
+  diff -rq -x .DS_Store "$(base_dir "$1" "$2")" "$(draft_dir "$1" "$2")" 2>/dev/null \
+    | sed -nE "s#^Files .*/([^/]+) and .* differ\$#\1#p; s#^Only in [^:]*: (.*)\$#\1#p" | sort -u
+}
+
+next_nudge_percent() {
+  local last_bucket
+  last_bucket=$(cat "$NUDGE_DIR/$1" 2>/dev/null)
+  case "$last_bucket" in
+    ''|*[!0-9]*) echo "$NUDGE_START_PERCENT" ;;
+    *) echo $((NUDGE_START_PERCENT + NUDGE_STEP_PERCENT * (last_bucket + 1))) ;;
+  esac
+}
+
+cmd_status() {
+  local session="$1" slug show="" changed="" checkpoint="" percent
+  validate_session "$session"
+  slug=$(cmd_current "$session")
+  if [ -n "$slug" ]; then
+    show=$(cmd_show "$session")
+    changed=$(draft_changed_files "$session" "$slug")
+    checkpoint=$(git -C "$CTX_HOME" log -1 --format='%h%x09%cI%x09%s' -- "workstreams/$slug" 2>/dev/null)
+  fi
+  percent=$(context_percent "$session" "${2:-}")
+  workstream_rows | jq -R 'split("\t") | {slug: .[0], status: .[1], updated: .[2], title: .[3], summary: .[4], repos: .[5]}' \
+    | jq -s \
+      --arg session "$session" --arg slug "$slug" --arg registered "$(latest_registration "$session")" \
+      --arg draft "$( [ -n "$slug" ] && draft_dir "$session" "$slug")" --arg changed "$changed" \
+      --arg show "$show" --arg checkpoint "$checkpoint" --arg percent "$percent" \
+      --arg next "$(next_nudge_percent "$session")" --arg ctx "$CTX_BIN" --arg home "$CTX_HOME" --argjson version "$CTX_VERSION" '
+      def lines: split("\n") | map(select(. != ""));
+      ($checkpoint | split("\t")) as $c
+      | {
+          version: $version, ctx: $ctx, home: $home, session: $session,
+          workstream: (if $slug == "" then null else $slug end),
+          registered: (if $registered == "" then null else $registered end),
+          show: (if $slug == "" then null else $show end),
+          draft: (if $slug == "" then null else {dir: $draft, changed: ($changed | lines)} end),
+          last_checkpoint: (if ($c | length) < 3 then null else {commit: $c[0], date: $c[1], subject: ($c[2:] | join("\t"))} end),
+          context: {percent: ($percent | tonumber? // null), next_nudge_percent: ($next | tonumber)},
+          workstreams: .
+        }'
+}
+
 lint_dir() {
   local dir="$1" size status=0
   [ -f "$dir/now.md" ] || { echo "$dir: missing now.md"; return 1; }
@@ -1005,9 +1049,13 @@ main() {
       cmd_drop "$1"
       ;;
     candidates) cmd_candidates "$@" ;;
+    status)
+      [ $# -ge 1 ] || die "usage: ctx status <session> [transcript]"
+      cmd_status "$@"
+      ;;
     doctor) cmd_doctor ;;
     update) cmd_update ;;
-    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | doctor | update | hook start | hook prompt | statusline" ;;
+    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | status | doctor | update | hook start | hook prompt | statusline" ;;
   esac
 }
 

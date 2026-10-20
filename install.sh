@@ -117,20 +117,36 @@ install_skill() {
   replace_if_changed "$SKILL" "$SKILL.new"
 }
 
+install_pane() {
+  command -v claude >/dev/null 2>&1 || die "--with-pane needs the claude CLI on PATH"
+  claude plugin marketplace add "$REPO_DIR" >/dev/null 2>&1 || claude plugin marketplace update claude-workstreams >/dev/null 2>&1 || true
+  claude plugin install workstream-pane@claude-workstreams >/dev/null || die "could not install the workstream pane; run: claude plugin install workstream-pane@claude-workstreams"
+  echo "Installed the workstream pane (plugin workstream-pane@claude-workstreams, read from $REPO_DIR/pane)."
+}
+
 main() {
-  local source
+  local source with_pane=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --with-pane) with_pane=1 ;;
+      *) die "unknown option: $arg (options: --with-pane)" ;;
+    esac
+  done
   require jq
   require git
   require awk
   if ! is_checkout "$SCRIPT_DIR"; then
     source=$(fetch_source)
-    exec env CTX_HOME="$CTX_HOME" CTX_REPO_URL="$CTX_REPO_URL" CLAUDE_DIR="$CLAUDE_DIR" bash "$source/install.sh"
+    exec env CTX_HOME="$CTX_HOME" CTX_REPO_URL="$CTX_REPO_URL" CLAUDE_DIR="$CLAUDE_DIR" bash "$source/install.sh" "$@"
   fi
   REPO_DIR="$SCRIPT_DIR"
   install_script
   install_settings
   install_rules
   install_skill
+  if [ "$with_pane" -eq 1 ]; then
+    install_pane
+  fi
   echo "Installed claude-workstreams into $CTX_HOME from $REPO_DIR."
   echo
   CTX_HOME="$CTX_HOME" CTX_SETTINGS="$SETTINGS" "$CTX_BIN" doctor

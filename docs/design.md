@@ -22,6 +22,8 @@ The chat is disposable; the workstream on disk is the source of truth. A session
 | Context source | Status line `used_percentage` when available, else the transcript's last main-thread usage against a configurable window | The desktop app never runs the status line |
 | Failure mode | Hooks fail open; `ctx doctor` and a version line make silence visible | A broken hook must never block a session |
 | Archive | Refuses while another session is attached or has unpublished edits | Archiving under a live session silently detached it in testing |
+| Pane | An optional plugin reads one read-only `ctx status <session>` JSON and draws it; its only write is the Checkpoint button, which runs `ctx checkpoint` | One command keeps the file layout private to `ctx` and is testable in bash; the plugin API has no file watch, so the pane refreshes on turn end, on demand and every 10 seconds |
+| Pane install | `install.sh --with-pane` adds the checkout as a local marketplace and installs from it | A plugin whose marketplace is a folder is read from that folder, so `ctx update` updates the pane with no reinstall |
 
 ## Checkpoint, step by step
 

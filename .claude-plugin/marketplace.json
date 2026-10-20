@@ -1,0 +1,14 @@
+{
+  "name": "claude-workstreams",
+  "description": "Durable, git-backed context for Claude Code sessions",
+  "owner": {
+    "name": "Mohammed Faour"
+  },
+  "plugins": [
+    {
+      "name": "workstream-pane",
+      "source": "./pane",
+      "description": "Shows this session's workstream, draft state and context use in a pane"
+    }
+  ]
+}
