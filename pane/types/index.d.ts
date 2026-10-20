@@ -29,6 +29,7 @@ declare module 'claude-code' {
       note: string
       percent: number | null
       expanded: boolean
+      isPaneOpen: boolean
     }
   }
 }

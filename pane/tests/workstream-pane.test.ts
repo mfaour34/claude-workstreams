@@ -54,12 +54,17 @@ const PANE = {
   props: { title: 'Workstream', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const
 
-function fakeHost(on: On, status: object, calls: string[][]) {
+function fakeHost(on: On, status: object, calls: string[][], placements: boolean[] = []) {
   mock.clock(on)
   mock.env(on, { HOME: '/home/me' })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', ($, e) => {
+    calls.push(['ui.open', e.id])
+    if (placements.shift() === false) return { value: { isPlaced: false, reason: 'the window is too narrow' } }
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => ({ value: undefined }))
   on('fs.read', () => ({ value: SETTINGS }))
   on('session.id', () => ({ value: 's1' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1_000_000, percent: 37 }, rateLimits: [] } }))
@@ -113,7 +118,7 @@ test('shows the workstream, draft, context and index on every surface', async ($
     expect(await ui.find({ text: /gamma/ })).toBe(undefined)
     await ui.unmount()
   }
-  expect(calls[0]).toEqual([CTX, 'status', 's1'])
+  expect(calls).toContainEqual([CTX, 'status', 's1'])
 })
 
 test('checkpoints with the typed message and shows what ctx said', async ($, on) => {
@@ -138,4 +143,32 @@ test('an unregistered session says so and offers no checkpoint', async ($, on) =
   expect(await ui.find({ text: 'Alpha summary' })).toBeDefined()
   expect(await ui.find({ text: 'Status' })).toBe(undefined)
   await ui.unmount()
+})
+
+const BAND = {
+  plugin: 'workstream-pane',
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
+
+test('a band above the prompt opens the pane while it is not shown', async ($, on) => {
+  const calls: string[][] = []
+  fakeHost(on, STATUS, calls, [false])
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({}))
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    if (surface === 'desktop') {
+      expect(await ui.find({ key: 'open-pane' })).toBe(undefined)
+      await ui.unmount()
+      continue
+    }
+    expect(await ui.find({ text: 'alpha' })).toBeDefined()
+    expect(await ui.find({ text: '2 unpublished' })).toBeDefined()
+    const opens = calls.filter(call => call[0] === 'ui.open').length
+    await ui.press({ key: 'open-pane' })
+    expect(calls.filter(call => call[0] === 'ui.open').length).toBe(opens + 1)
+    expect(await ui.find({ key: 'open-pane' })).toBe(undefined)
+    await ui.unmount()
+  }
 })

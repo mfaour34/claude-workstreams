@@ -13,6 +13,7 @@ const problem = atom({ plugin: 'workstream-pane', key: 'problem' } as const, '')
 const note = atom({ plugin: 'workstream-pane', key: 'note' } as const, '')
 const percent = atom({ plugin: 'workstream-pane', key: 'percent' } as const, null)
 const expanded = atom({ plugin: 'workstream-pane', key: 'expanded' } as const, false)
+const isPaneOpen = atom({ plugin: 'workstream-pane', key: 'isPaneOpen' } as const, false)
 
 type SettingsHooks = { hooks?: { SessionStart?: { hooks?: { command?: string }[] }[] } }
 
@@ -88,10 +89,15 @@ async function checkpoint($: EngineInterface, message: string): Promise<void> {
   await refresh($)
 }
 
+async function openPane($: EngineInterface): Promise<void> {
+  const opened = await $.ui.open({ id: PANE, title: TITLE })
+  await update($, isPaneOpen, () => opened.isPlaced)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    void $.ui.open({ id: PANE, title: TITLE })
+    void openPane($)
     void refresh($)
     // shortcut: polls even while the pane is closed; one `ctx status` run every 10 s is cheap.
     $.clock.every(REFRESH_MS, () => void refresh($))
@@ -100,9 +106,33 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'workstream' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE })
+    await openPane($)
     await refresh($)
     return { text: 'Workstream pane opened.' }
+  })
+
+  on('ui.close', async ($, e, next) => {
+    const closed = await next(e)
+    if (e.id === PANE) await update($, isPaneOpen, () => false)
+    return closed
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || (await read($, isPaneOpen))) return next(e)
+    const current = await read($, status)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const changed = current?.draft?.changed.length ?? 0
+    return (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Text weight="semibold">{current?.workstream ?? 'No workstream'}</Text>
+        {current?.draft && (
+          <Text dimColor color={changed > 0 ? 'yellow' : undefined}>
+            {changed > 0 ? `${changed} unpublished` : 'draft clean'}
+          </Text>
+        )}
+        <Button key="open-pane" label="Open workstream" onPress={() => void openPane($)} />
+      </Box>
+    )
   })
 
   on('turn.complete', async ($, e, next) => {
