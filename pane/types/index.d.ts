@@ -28,6 +28,7 @@ declare module 'claude-code' {
       problem: string
       note: string
       percent: number | null
+      expanded: boolean
     }
   }
 }

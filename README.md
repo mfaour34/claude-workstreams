@@ -116,14 +116,12 @@ Fast-forwards the source it was installed from, re-runs the installer with the s
 
 ## Workstream pane (optional)
 
-A Claude Code plugin that opens a **Workstream** pane beside the conversation, in the Claude desktop app and the fullscreen terminal. It shows:
+A Claude Code plugin that opens a **Workstream** pane beside the conversation, in the Claude desktop app and the fullscreen terminal. Under a header with the session's workstream (or "No workstream yet"), it has four sections:
 
-- the workstream this session is on, or "No workstream yet";
-- the draft: clean, or which files have unpublished edits;
-- the last checkpoint commit and how long ago it was;
-- context used and the threshold of the next nudge;
-- the `ctx show` read view (Goal, Now, Next steps, active decisions and facts, log);
-- the other active and paused workstreams.
+- **Status:** the draft (clean, or which files have unpublished edits), the last checkpoint and how long ago it was, context used and the threshold of the next nudge;
+- **Checkpoint:** a message field and a button;
+- **Now:** the goal, current state and next steps, with active decisions, facts and the log behind a toggle;
+- **Other workstreams:** the rest of the index.
 
 Type a message and press **Checkpoint** to run `ctx checkpoint` for this session; the pane shows what `ctx` answered, merge conflicts and lint errors included. Nothing else in the pane writes. It refreshes when a turn ends, after a checkpoint, on **Refresh**, and every 10 seconds. `/workstream` reopens it after you close it.
 

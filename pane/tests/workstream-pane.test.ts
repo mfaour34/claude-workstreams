@@ -25,6 +25,10 @@ const SHOW = [
   '## Goal',
   '',
   'Ship alpha.',
+  '',
+  '## Decisions (active)',
+  '',
+  '- D1 | 2026-10-20 | active | Use a lock.',
 ].join('\n')
 const STATUS = {
   version: 1,
@@ -74,7 +78,11 @@ test('finds ctx from the SessionStart hook in settings', async () => {
 })
 
 test('drops the header and frontmatter from the show view', async () => {
-  expect(workstreamBody(SHOW)).toBe('## Goal\n\nShip alpha.')
+  expect(workstreamBody(SHOW)).toEqual({
+    now: '## Goal\n\nShip alpha.',
+    details: '## Decisions (active)\n\n- D1 | 2026-10-20 | active | Use a lock.',
+  })
+  expect(workstreamBody('## Goal\n\nOnly now.')).toEqual({ now: '## Goal\n\nOnly now.', details: '' })
 })
 
 test('says how long ago a checkpoint was', async () => {
@@ -91,11 +99,17 @@ test('shows the workstream, draft, context and index on every surface', async ($
   await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ text: 'Draft: unpublished edits in log.md, now.md' })).toBeDefined()
-    expect(await ui.find({ text: 'Context 37%, next nudge at 50%' })).toBeDefined()
-    expect(await ui.find({ text: /Last checkpoint abc1234, .*: alpha: create/ })).toBeDefined()
+    expect(await ui.find({ text: 'Unpublished: log.md, now.md' })).toBeDefined()
+    expect(await ui.find({ text: '37% used, next nudge at 50%' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /ago \(abc1234\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^create$/ })).toBeDefined()
     expect(await ui.find({ type: 'Markdown', text: '## Goal' })).toBeDefined()
-    expect(await ui.find({ text: 'beta (paused, 2026-10-01): Beta summary' })).toBeDefined()
+    expect(await ui.find({ type: 'Markdown', text: 'Use a lock' })).toBe(undefined)
+    await ui.press({ key: 'details' })
+    expect(await ui.find({ type: 'Markdown', text: 'Use a lock' })).toBeDefined()
+    await ui.press({ key: 'details' })
+    expect(await ui.find({ text: 'beta (paused)' })).toBeDefined()
+    expect(await ui.find({ text: 'Beta summary' })).toBeDefined()
     expect(await ui.find({ text: /gamma/ })).toBe(undefined)
     await ui.unmount()
   }
@@ -121,6 +135,7 @@ test('an unregistered session says so and offers no checkpoint', async ($, on) =
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ text: 'No workstream yet' })).toBeDefined()
   expect(await ui.find({ key: 'checkpoint' })).toBe(undefined)
-  expect(await ui.find({ text: /alpha \(active/ })).toBeDefined()
+  expect(await ui.find({ text: 'Alpha summary' })).toBeDefined()
+  expect(await ui.find({ text: 'Status' })).toBe(undefined)
   await ui.unmount()
 })
