@@ -755,6 +755,7 @@ add_origin() {
   ORIGIN=$(mktemp -d)
   git init -q --bare -b main "$ORIGIN"
   git -C "$CTX_HOME" remote add origin "$ORIGIN"
+  git -C "$CTX_HOME" config ctx.dailypush true
 }
 
 origin_head() {
@@ -808,6 +809,19 @@ test_session_start_pushes_once_a_day_when_ahead() {
   hook_start_input s1 /tmp startup | "$CTX" hook start >/dev/null
   wait_for_push_result
   assert_eq "$(origin_head)" "$(local_head)" "the next day pushes it"
+  rm -rf "$ORIGIN"
+}
+
+test_session_start_does_not_push_unless_opted_in() {
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  add_origin
+  git -C "$CTX_HOME" config --unset ctx.dailypush
+  hook_start_input s1 /tmp startup | "$CTX" hook start >/dev/null
+  sleep 0.3
+  assert_eq "$(origin_head)" "" "a remote alone is not an opt-in"
+  assert_eq "$([ -e "$CTX_HOME/.push" ] && echo attempted || echo skipped)" "skipped" "records no attempt"
+  assert_contains "$(CTX_SETTINGS=/nonexistent "$CTX" doctor)" "the daily push is off" "doctor says it is off"
+  assert_contains "$("$CTX" push)" "Pushed" "ctx push still works by hand"
   rm -rf "$ORIGIN"
 }
 

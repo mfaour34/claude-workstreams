@@ -768,8 +768,12 @@ unpushed_commit_count() {
   fi
 }
 
+daily_push_enabled() {
+  [ "$(git -C "$CTX_HOME" config --bool ctx.dailypush 2>/dev/null)" = true ]
+}
+
 push_is_due() {
-  has_origin || return 1
+  daily_push_enabled && has_origin || return 1
   [ "$(cut -f1 "$PUSH_FILE" 2>/dev/null)" != "$(date +%Y-%m-%d)" ] || return 1
   [ "$(unpushed_commit_count)" -gt 0 ]
 }
@@ -1098,6 +1102,9 @@ cmd_doctor() {
     "ctx v$CTX_VERSION"*) doctor_line "start hook answers" 0 ;;
     *) doctor_line "start hook answers" 1 ;;
   esac
+  if has_origin && ! daily_push_enabled; then
+    echo "info origin is set; the daily push is off (install.sh --remote <url> turns it on)"
+  fi
   if has_origin && [ -s "$PUSH_FILE" ]; then
     case "$(cut -f2 "$PUSH_FILE")" in
       ok|started) echo "info last daily push $(tr '\t' ' ' < "$PUSH_FILE")" ;;

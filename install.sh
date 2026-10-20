@@ -117,6 +117,25 @@ install_skill() {
   replace_if_changed "$SKILL" "$SKILL.new"
 }
 
+setup_remote() {
+  mkdir -p "$CTX_HOME"
+  [ -d "$CTX_HOME/.git" ] || git -C "$CTX_HOME" init -q -b main || die "cannot init git in $CTX_HOME"
+  if git -C "$CTX_HOME" remote get-url origin >/dev/null 2>&1; then
+    git -C "$CTX_HOME" remote set-url origin "$1"
+  else
+    git -C "$CTX_HOME" remote add origin "$1"
+  fi
+  git -C "$CTX_HOME" fetch -q origin || die "cannot fetch $1"
+  if ! git -C "$CTX_HOME" rev-parse -q --verify HEAD >/dev/null && git -C "$CTX_HOME" rev-parse -q --verify refs/remotes/origin/main >/dev/null; then
+    git -C "$CTX_HOME" checkout -q -B main origin/main || die "cannot check out origin/main in $CTX_HOME"
+    echo "Took the workstreams from $1."
+  elif git -C "$CTX_HOME" rev-parse -q --verify refs/remotes/origin/main >/dev/null && ! git -C "$CTX_HOME" merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+    echo "$1 has commits this folder lacks; run $CTX_BIN pull after the install."
+  fi
+  git -C "$CTX_HOME" config ctx.dailypush true
+  echo "Daily push to $1 is on: the first session start of each day pushes new commits."
+}
+
 install_pane() {
   command -v claude >/dev/null 2>&1 || die "--with-pane needs the claude CLI on PATH"
   claude plugin marketplace add "$REPO_DIR" >/dev/null 2>&1 || claude plugin marketplace update claude-workstreams >/dev/null 2>&1 || true
@@ -125,21 +144,31 @@ install_pane() {
 }
 
 main() {
-  local source with_pane=0 arg
-  for arg in "$@"; do
-    case "$arg" in
+  local source with_pane=0 remote="" args=("$@")
+  while [ $# -gt 0 ]; do
+    case "$1" in
       --with-pane) with_pane=1 ;;
-      *) die "unknown option: $arg (options: --with-pane)" ;;
+      --remote)
+        [ $# -ge 2 ] && [ -n "$2" ] || die "--remote needs a git URL"
+        remote="$2"
+        shift
+        ;;
+      --remote=*) remote="${1#--remote=}" ;;
+      *) die "unknown option: $1 (options: --with-pane, --remote <git url>)" ;;
     esac
+    shift
   done
   require jq
   require git
   require awk
   if ! is_checkout "$SCRIPT_DIR"; then
     source=$(fetch_source)
-    exec env CTX_HOME="$CTX_HOME" CTX_REPO_URL="$CTX_REPO_URL" CLAUDE_DIR="$CLAUDE_DIR" bash "$source/install.sh" "$@"
+    exec env CTX_HOME="$CTX_HOME" CTX_REPO_URL="$CTX_REPO_URL" CLAUDE_DIR="$CLAUDE_DIR" bash "$source/install.sh" ${args[@]+"${args[@]}"}
   fi
   REPO_DIR="$SCRIPT_DIR"
+  if [ -n "$remote" ]; then
+    setup_remote "$remote"
+  fi
   install_script
   install_settings
   install_rules

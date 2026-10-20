@@ -54,6 +54,7 @@ assert_eq "$?" "0" "install succeeds"
 assert_eq "$([ -e "$CLAUDE_CALLS" ] && echo called || echo untouched)" "untouched" "without --with-pane the claude CLI is not called"
 assert_contains "$out" "ok   start hook answers" "doctor runs at the end"
 assert_eq "$(cat "$CTX_HOME/.source")" "$REPO_DIR" "records the checkout it was installed from"
+assert_eq "$(git -C "$CTX_HOME" rev-parse --git-dir >/dev/null && git -C "$CTX_HOME" config ctx.dailypush)" "" "without --remote the daily push stays off"
 backups_after_first=$(find "$CLAUDE_DIR" -name '*.bak-claude-workstreams-*' | wc -l | tr -d ' ')
 "$REPO_DIR/install.sh" >/dev/null 2>&1
 assert_eq "$?" "0" "second install succeeds"
@@ -112,6 +113,25 @@ assert_contains "$(cat "$CLAUDE_CALLS")" "plugin marketplace update claude-works
 out=$(CLAUDE_STUB_FAIL=install "$REPO_DIR/install.sh" --with-pane 2>&1)
 assert_eq "$?" "1" "a failed plugin install fails the installer"
 assert_contains "$out" "could not install the workstream pane" "says why"
+REMOTE_WORK=$(mktemp -d)
+git init -q --bare -b main "$REMOTE_WORK/backup.git"
+git init -q -b main "$REMOTE_WORK/seed"
+mkdir -p "$REMOTE_WORK/seed/workstreams/alpha"
+echo "carried over" > "$REMOTE_WORK/seed/workstreams/alpha/log.md"
+git -C "$REMOTE_WORK/seed" -c user.name=t -c user.email=t@example.com add -A
+git -C "$REMOTE_WORK/seed" -c user.name=t -c user.email=t@example.com commit -qm "alpha"
+git -C "$REMOTE_WORK/seed" push -q "$REMOTE_WORK/backup.git" HEAD:main
+out=$(CTX_HOME="$REMOTE_WORK/fresh" CLAUDE_DIR="$REMOTE_WORK/claude" "$REPO_DIR/install.sh" --remote "$REMOTE_WORK/backup.git" 2>&1)
+assert_eq "$?" "0" "install --remote on a fresh folder succeeds"
+assert_eq "$(cat "$REMOTE_WORK/fresh/workstreams/alpha/log.md" 2>/dev/null)" "carried over" "takes the workstreams from the remote"
+assert_eq "$(git -C "$REMOTE_WORK/fresh" config ctx.dailypush)" "true" "turns the daily push on"
+assert_eq "$(git -C "$REMOTE_WORK/fresh" remote get-url origin)" "$REMOTE_WORK/backup.git" "sets origin"
+assert_contains "$out" "Daily push" "says the daily push is on"
+out=$("$REPO_DIR/install.sh" --remote 2>&1)
+assert_eq "$?" "1" "--remote without a URL fails"
+assert_contains "$out" "needs a git URL" "says why"
+rm -rf "$REMOTE_WORK"
+
 out=$("$REPO_DIR/install.sh" --bogus 2>&1)
 assert_eq "$?" "1" "an unknown option fails"
 : > "$CLAUDE_CALLS"

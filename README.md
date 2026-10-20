@@ -116,24 +116,17 @@ Fast-forwards the source it was installed from, re-runs the installer with the s
 
 ## Backup and a second machine (optional)
 
-The context folder is a plain git repository, and the local copy is always the one that counts. Give it a private remote to back it up:
+Off by default: without it, nothing leaves your machine. The local copy is always the one that counts. To back it up, create an empty **private** repository and install with `--remote`:
 
 ```bash
-cd ~/.claude/context
-git remote add origin git@github.com:<you>/claude-context.git
-git push -u origin main
+curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/install.sh | bash -s -- --remote git@github.com:<you>/<private-repo>.git
 ```
 
-From then on the first session start of each day pushes in the background, and only if there are commits the remote does not have yet. It never pulls. `ctx push` pushes now.
+or `./install.sh --remote <url>` from a clone. This sets `origin` on the context folder and turns on the daily push: the first session start of each day pushes in the background, and only when there are commits the remote does not have yet. It never pulls. `ctx push` pushes now.
 
-On another machine, clone the remote into the context folder before you install, so the installer adopts it:
+On another machine, run the same command before anything else. On a fresh folder `--remote` takes the workstreams from the remote, then installs as usual. Run `ctx pull` when you switch machines: it merges the remote into the local copy, keeps additions from both sides, and stops without changing anything if both machines rewrote the same line in a `now.md`. When a daily push is rejected because the other machine pushed first, the next session start says so; `ctx pull` fixes it.
 
-```bash
-git clone git@github.com:<you>/claude-context.git ~/.claude/context
-curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/install.sh | bash
-```
-
-Run `ctx pull` when you switch machines. It merges the remote into the local copy: additions from both sides are kept, and if both machines rewrote the same line in a `now.md` it stops and changes nothing. When a daily push is rejected because the other machine pushed first, the next session start says so; `ctx pull` fixes it and the next session start pushes the merge.
+To turn the daily push off again: `git -C <context folder> config ctx.dailypush false`.
 
 ## Workstream pane (optional)
 
@@ -193,7 +186,7 @@ Context: ~/.claude/context/workstreams/<slug>
 | `ctx status <session> [transcript]` | Everything the pane shows, as JSON: workstream, read view, draft edits, last checkpoint, context use, next nudge, index. Read-only |
 | `ctx doctor` | Check the installation |
 | `ctx update` | Pull the latest release and reinstall |
-| `ctx push` | Push unpushed commits to `origin` now (session start does it once a day) |
+| `ctx push` | Push unpushed commits to `origin` now (with `--remote`, session start does it once a day) |
 | `ctx pull` | Merge `origin` into the local copy; stops without changes on a conflict |
 
 All commands live at `~/.claude/context/bin/ctx`. The session id appears in the hook messages; `tail -3 ~/.claude/context/.sessions.tsv` shows the latest ones.
@@ -233,7 +226,7 @@ At 40%, and every 10% after, the agent is told to checkpoint at the next milesto
 ## FAQ
 
 **Does it send my notes anywhere?**
-No. Everything lives in a local git repository with no remote, unless you add one (see Backup). Lint rejects email addresses and IBANs, and the rules tell the agent never to store secrets or query results.
+No. Everything lives in a local git repository with no remote, unless you install with `--remote` (see Backup). Lint rejects email addresses and IBANs, and the rules tell the agent never to store secrets or query results.
 
 **Do I really get asked every session?**
 Once, at the start, and the right answer is usually the first option. Pick "No context file" for one-off questions. Spawned sessions with a `Context:` line and subagents are never asked.
