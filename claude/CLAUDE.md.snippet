@@ -1,0 +1,14 @@
+<!-- claude-workstreams:start -->
+## Context files
+
+Every session works from a workstream in `@CTX_HOME@/workstreams/<slug>/`. The script `@CTX_HOME@/bin/ctx` owns the index, ids and merges. The procedures are in the `context` skill.
+
+- When a hook says the session has no workstream, ask with AskUserQuestion before any other work, with the options the hook lists, in that order. Then run the `ctx` command the hook gives, and `ctx show <session>`.
+- Read the workstream with `ctx show <session>`. Edit only the draft it names, never the main copy, `state.md` or `.sessions.tsv`.
+- Checkpoint at milestones with `ctx checkpoint <session> "<message>"`: a decision made, a finding verified, a PR opened or pushed, a plan changed, before ending a turn that changed state. When the user says "checkpoint", do the Checkpoint procedure from the `context` skill.
+- Every fact cites a source. Every decision is dated. A replaced entry is marked `replaced by <id> on <date>`, never deleted. Take ids from `ctx next-id`.
+- Keep the workstream under 30 KB. Link specs, PRs and documents; do not copy them.
+- No secrets, tokens or personal data, in entries or in `queries/`. Aggregates and ids are fine; never store query results.
+- A brief for a spawned session includes the line `Context: @CTX_HOME@/workstreams/<slug>`.
+- When a hook reports the context size, finish the user's request first. Suggest `/clear` only when the task is finished or you are waiting on the user, never mid-task.
+<!-- claude-workstreams:end -->

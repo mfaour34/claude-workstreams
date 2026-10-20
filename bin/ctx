@@ -1,0 +1,968 @@
+#!/bin/bash
+set -u
+export LC_ALL=C
+
+CTX_VERSION=1
+CTX_HOME="${CTX_HOME:-$HOME/.claude/context}"
+CTX_BIN="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+WS_DIR="$CTX_HOME/workstreams"
+ARCHIVE_DIR="$CTX_HOME/archive"
+DRAFTS_DIR="$CTX_HOME/.drafts"
+REGISTRY="$CTX_HOME/.sessions.tsv"
+STATE="$CTX_HOME/state.md"
+LOCK_DIR="$CTX_HOME/.lock"
+IDS_DIR="$CTX_HOME/.ids"
+USAGE_DIR="$CTX_HOME/.usage"
+NUDGE_DIR="$CTX_HOME/.nudges"
+STATUSLINE_NEXT="$CTX_HOME/.statusline-next"
+SIZE_CAP_BYTES=30720
+INJECT_CAP_BYTES=8000
+NUDGE_START_PERCENT=40
+NUDGE_STEP_PERCENT=10
+CONTEXT_WINDOW_TOKENS="${CTX_CONTEXT_WINDOW_TOKENS:-1000000}"
+IDLE_DAYS=7
+APPEND_FILES="decisions.md facts.md sources.md traps.md artifacts.md log.md history.md"
+TAB="$(printf '\t')"
+STOPWORDS='the|and|for|with|this|that|from|into|what|why|how|can|you|are|was|our|not|but|all|have|need|want|please|check|look|make|let|its|about|does|did|should|would|could|there|here|then|than|also|just|now|new|get|use'
+
+WORKSTREAM_ROWS_AWK='
+FNR == 1 {
+  if (NR > 1) emit()
+  slug = FILENAME; sub(/\/now\.md$/, "", slug); sub(/.*\//, "", slug)
+  status = ""; updated = ""; title = ""; summary = ""; repos = ""
+  in_frontmatter = ($0 == "---")
+  next
+}
+in_frontmatter && $0 == "---" { in_frontmatter = 0; next }
+in_frontmatter {
+  colon = index($0, ":")
+  key = substr($0, 1, colon - 1)
+  value = substr($0, colon + 1)
+  sub(/^ +/, "", value)
+  gsub(/\t/, " ", value)
+  if (key == "status") status = value
+  else if (key == "updated") updated = value
+  else if (key == "title") title = value
+  else if (key == "summary") summary = value
+  else if (key == "repos") repos = value
+}
+END { if (NR > 0) emit() }
+function emit() { printf "%s\t%s\t%s\t%s\t%s\t%s\n", slug, status, updated, title, summary, repos }
+'
+
+CANDIDATE_SCORE_AWK='
+BEGIN { count = split(query, query_words, " "); for (i = 1; i <= count; i++) wanted[query_words[i]] = 1 }
+$2 != "active" && $2 != "paused" { next }
+{
+  text = tolower($1 " " $4 " " $5 " " $6)
+  gsub(/[^a-z0-9]+/, " ", text)
+  word_count = split(text, words, " ")
+  score = 0
+  split("", seen)
+  for (i = 1; i <= word_count; i++) {
+    if ((words[i] in wanted) && !(words[i] in seen)) { seen[words[i]] = 1; score++ }
+  }
+  repo_list = " " $6 " "
+  gsub(/,/, " ", repo_list)
+  if (repo != "" && index(repo_list, " " repo " ")) score += 2
+  printf "%d\t%s\t%s\t%s\n", score, $3, $1, $5
+}
+'
+
+LINT_AWK='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+function here() { return base_name ":" FNR }
+function fail(where, message) { print where ": " message; errors++ }
+function is_date(s) { return s ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ }
+function take_fields(line, count,    raw, n, i, last) {
+  n = split(line, raw, "|")
+  if (n < count) return 0
+  for (i = 1; i < count; i++) field[i] = trim(raw[i])
+  last = raw[count]
+  for (i = count + 1; i <= n; i++) last = last "|" raw[i]
+  field[count] = trim(last)
+  return 1
+}
+function remember_id(id) {
+  if (id in seen_id) fail(here(), "duplicate id " id)
+  seen_id[id] = 1
+}
+function check_status(id, status, prefix,    parts) {
+  if (status == "active") return
+  if (status ~ ("^replaced by " prefix "[0-9]+ on [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$")) {
+    split(status, parts, " ")
+    replaced_target[parts[3]] = here()
+    return
+  }
+  fail(here(), id ": status must be active or replaced by " prefix "<n> on YYYY-MM-DD")
+}
+function check_decision(line) {
+  if (line !~ /^- D[0-9]+ *\|/ || !take_fields(substr(line, 3), 4)) {
+    fail(here(), "decision must be: - D<n> | YYYY-MM-DD | status | text")
+    return
+  }
+  remember_id(field[1])
+  if (!is_date(field[2])) fail(here(), field[1] ": date must be YYYY-MM-DD")
+  check_status(field[1], field[3], "D")
+  if (field[4] == "") fail(here(), field[1] ": text is empty")
+}
+function check_fact(line,    cited, n, i, source_id) {
+  if (line !~ /^- F[0-9]+ *\|/ || !take_fields(substr(line, 3), 5)) {
+    fail(here(), "fact must be: - F<n> | checked YYYY-MM-DD | S<n>, ... | status | text")
+    return
+  }
+  remember_id(field[1])
+  if (field[2] !~ /^checked [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) fail(here(), field[1] ": second field must be checked YYYY-MM-DD")
+  if (field[3] == "") {
+    fail(here(), field[1] ": cite at least one source")
+  } else {
+    n = split(field[3], cited, ",")
+    for (i = 1; i <= n; i++) {
+      source_id = trim(cited[i])
+      if (source_id !~ /^S[0-9]+$/) fail(here(), field[1] ": " source_id " is not a source id")
+      else citation[source_id] = here() " " field[1]
+    }
+  }
+  check_status(field[1], field[4], "F")
+  if (field[5] == "") fail(here(), field[1] ": text is empty")
+}
+function check_source(line) {
+  if (line !~ /^- S[0-9]+ *\|/ || !take_fields(substr(line, 3), 4)) {
+    fail(here(), "source must be: - S<n> | kind | checked YYYY-MM-DD | locator")
+    return
+  }
+  remember_id(field[1])
+  if (field[2] !~ /^(sql|bq|code|pr|slack|datadog|jira|confluence|doc|user)$/) fail(here(), field[1] ": unknown kind " field[2])
+  if (field[3] !~ /^checked [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) fail(here(), field[1] ": third field must be checked YYYY-MM-DD")
+  if (field[4] == "") fail(here(), field[1] ": locator is empty")
+}
+FNR == 1 { base_name = FILENAME; sub(/.*\//, "", base_name); in_frontmatter = 0 }
+/^(<<<<<<<|=======|>>>>>>>)/ { fail(here(), "unresolved merge conflict marker"); next }
+/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/ { fail(here(), "looks like an email address; remove personal data") }
+/(^|[^A-Z0-9])[A-Z][A-Z][0-9][0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]*([^A-Z0-9]|$)/ { fail(here(), "looks like an IBAN; remove personal data") }
+base_name == "now.md" && FNR == 1 && $0 == "---" { in_frontmatter = 1; next }
+base_name == "now.md" && in_frontmatter && $0 == "---" { in_frontmatter = 0; frontmatter_closed = 1; next }
+base_name == "now.md" && in_frontmatter {
+  colon = index($0, ":")
+  frontmatter[substr($0, 1, colon - 1)] = trim(substr($0, colon + 1))
+  next
+}
+/^[ \t]*$/ { next }
+base_name == "decisions.md" { check_decision($0); next }
+base_name == "facts.md" { check_fact($0); next }
+base_name == "sources.md" { check_source($0); next }
+base_name == "history.md" {
+  if ($0 ~ /^- D/) check_decision($0)
+  else if ($0 ~ /^- F/) check_fact($0)
+  else fail(here(), "history holds only D and F lines")
+  next
+}
+base_name == "log.md" {
+  if ($0 !~ /^- [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] /) fail(here(), "log entry must be: - YYYY-MM-DD <session>: text")
+  next
+}
+base_name == "traps.md" || base_name == "artifacts.md" {
+  if ($0 !~ /^- /) fail(here(), "entries start with \"- \"")
+  next
+}
+END {
+  if (!frontmatter_closed) fail("now.md:1", "missing frontmatter")
+  split("title status repos summary updated", keys, " ")
+  for (i = 1; i <= 5; i++) if (frontmatter[keys[i]] == "") fail("now.md", "frontmatter needs " keys[i])
+  if (frontmatter["status"] != "" && frontmatter["status"] !~ /^(active|paused|done)$/) fail("now.md", "status must be active, paused or done")
+  if (frontmatter["updated"] != "" && !is_date(frontmatter["updated"])) fail("now.md", "updated must be YYYY-MM-DD")
+  for (id in citation) if (!(id in seen_id)) { split(citation[id], where, " "); fail(where[1], where[2] " cites missing source " id) }
+  for (id in replaced_target) if (!(id in seen_id)) fail(replaced_target[id], "replaced by missing " id)
+  exit (errors > 0)
+}
+'
+
+die() { echo "ctx: $*" >&2; exit 1; }
+
+git_ctx() {
+  if git -C "$CTX_HOME" config user.email >/dev/null 2>&1; then
+    git -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+  else
+    git -c user.name=ctx -c user.email=ctx@localhost -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+  fi
+}
+
+ensure_repo() {
+  if [ ! -d "$CTX_HOME/.git" ]; then
+    git -C "$CTX_HOME" init -q -b main || die "cannot init git in $CTX_HOME"
+  fi
+  if [ ! -e "$CTX_HOME/.gitignore" ]; then
+    printf '%s\n' state.md .sessions.tsv .drafts/ .ids/ .usage/ .nudges/ .lock/ .statusline-next .DS_Store '*.tmp.*' > "$CTX_HOME/.gitignore"
+    git_ctx -C "$CTX_HOME" add .gitignore && git_ctx -C "$CTX_HOME" commit -q -m "Add gitignore"
+  fi
+}
+
+ensure_dirs() {
+  mkdir -p "$WS_DIR" "$ARCHIVE_DIR" "$DRAFTS_DIR" || die "cannot create $CTX_HOME"
+  [ -e "$REGISTRY" ] || : > "$REGISTRY"
+  ensure_repo
+}
+
+validate_slug() {
+  printf '%s\n' "$1" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || die "invalid slug: $1"
+}
+
+validate_session() {
+  printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_-]+$' || die "invalid session id: $1"
+}
+
+lock_is_stale() {
+  local modified
+  modified=$(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)
+  [ $(( $(date +%s) - modified )) -gt 30 ]
+}
+
+acquire_lock() {
+  local tries=0
+  until mkdir "$LOCK_DIR" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 50 ]; then
+      lock_is_stale || die "lock busy: $LOCK_DIR"
+      rmdir "$LOCK_DIR" 2>/dev/null
+      tries=0
+    fi
+    sleep 0.1
+  done
+  trap release_lock EXIT
+}
+
+release_lock() {
+  rmdir "$LOCK_DIR" 2>/dev/null
+  trap - EXIT
+}
+
+workstream_rows() {
+  set -- "$WS_DIR"/*/now.md
+  [ -e "$1" ] || return 0
+  awk "$WORKSTREAM_ROWS_AWK" "$@"
+}
+
+state_lines() {
+  workstream_rows | awk -F'\t' -v status="$1" -v registry="$REGISTRY" '
+    FILENAME == registry { if (!seen[$1 FS $2]++) count[$2]++; next }
+    $2 == status { printf "%s\t- %s: %s · %s · updated %s · %d sessions\n", $3, $1, $5, $6, $3, count[$1] }
+  ' "$REGISTRY" - | sort -r | cut -f2-
+}
+
+render_state() {
+  local tmp="$STATE.tmp.$$"
+  {
+    printf '# Workstreams\n\nGenerated by ctx. Do not edit by hand.\n\n## Active\n\n'
+    state_lines active
+    printf '\n## Paused\n\n'
+    state_lines paused
+  } > "$tmp" && mv "$tmp" "$STATE"
+}
+
+append_registration() {
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REGISTRY"
+}
+
+write_template() {
+  local name
+  mkdir -p "$1"
+  cat > "$1/now.md" <<EOF
+---
+title: $2
+status: active
+repos: -
+summary: $2
+updated: $(date +%Y-%m-%d)
+---
+
+## Goal
+
+## Now
+
+## Next steps
+EOF
+  for name in $APPEND_FILES; do
+    : > "$1/$name"
+  done
+}
+
+commit_main() {
+  local message="$1"
+  shift
+  git_ctx -C "$CTX_HOME" add -A -- "$@" || return 1
+  git -C "$CTX_HOME" diff --cached --quiet && return 0
+  git_ctx -C "$CTX_HOME" commit -q -m "$message"
+}
+
+draft_dir() { echo "$DRAFTS_DIR/$1/$2"; }
+
+base_dir() { echo "$DRAFTS_DIR/$1/.base/$2"; }
+
+reset_draft() {
+  local draft base
+  draft=$(draft_dir "$1" "$2")
+  base=$(base_dir "$1" "$2")
+  rm -rf "$draft" "$base"
+  mkdir -p "$(dirname "$draft")" "$(dirname "$base")"
+  cp -R "$WS_DIR/$2" "$draft"
+  cp -R "$WS_DIR/$2" "$base"
+}
+
+draft_has_edits() {
+  local draft base
+  draft=$(draft_dir "$1" "$2")
+  base=$(base_dir "$1" "$2")
+  [ -d "$draft" ] && [ -d "$base" ] || return 1
+  ! diff -rq -x .DS_Store "$draft" "$base" >/dev/null 2>&1
+}
+
+refresh_draft() {
+  [ -d "$WS_DIR/$2" ] || return 0
+  if draft_has_edits "$1" "$2"; then
+    return 0
+  fi
+  reset_draft "$1" "$2"
+}
+
+cmd_new() {
+  [ $# -ge 3 ] || die 'usage: ctx new <slug> "<title>" <session> [cwd]'
+  local slug="$1" title="$2" session="$3" cwd="${4:-$PWD}"
+  validate_slug "$slug"
+  [ "$slug" != none ] || die "slug none is reserved"
+  validate_session "$session"
+  acquire_lock
+  [ ! -e "$WS_DIR/$slug" ] || die "workstream exists: $slug"
+  [ ! -e "$ARCHIVE_DIR/$slug" ] || die "workstream is archived: $slug"
+  write_template "$WS_DIR/$slug" "$title"
+  commit_main "$slug: create" "workstreams/$slug" || die "commit failed for $slug"
+  reset_draft "$session" "$slug"
+  append_registration "$session" "$slug" "$cwd"
+  render_state
+  release_lock
+  draft_dir "$session" "$slug"
+}
+
+cmd_render() {
+  acquire_lock
+  render_state
+  release_lock
+}
+
+cmd_list() {
+  cmd_render
+  cat "$STATE"
+}
+
+latest_registration() {
+  awk -F'\t' -v session="$1" '$1 == session { slug = $2 } END { print slug }' "$REGISTRY"
+}
+
+cmd_current() {
+  local slug
+  slug=$(latest_registration "$1")
+  if [ -n "$slug" ] && [ -d "$WS_DIR/$slug" ]; then
+    echo "$slug"
+  fi
+}
+
+cmd_register() {
+  [ $# -ge 2 ] || die "usage: ctx register <session> <slug|none> [cwd]"
+  local session="$1" slug="$2" cwd="${3:-$PWD}"
+  validate_session "$session"
+  if [ "$slug" != none ]; then
+    validate_slug "$slug"
+    [ -d "$WS_DIR/$slug" ] || die "no such workstream: $slug"
+  fi
+  acquire_lock
+  if [ "$slug" != none ]; then
+    refresh_draft "$session" "$slug"
+  fi
+  append_registration "$session" "$slug" "$cwd"
+  render_state
+  release_lock
+  if [ "$slug" != none ]; then
+    draft_dir "$session" "$slug"
+  fi
+}
+
+print_section() {
+  printf '\n## %s\n\n' "$1"
+  if [ -n "$2" ]; then
+    printf '%s\n' "$2"
+  fi
+}
+
+cmd_show() {
+  local slug dir
+  slug=$(cmd_current "$1")
+  [ -n "$slug" ] || die "session has no workstream: $1"
+  dir=$(draft_dir "$1" "$slug")
+  [ -d "$dir" ] || dir="$WS_DIR/$slug"
+  echo "# Workstream $slug"
+  echo
+  echo "Edit only the files in $dir. Checkpoint with: $CTX_BIN checkpoint $1 \"<message>\""
+  echo
+  cat "$dir/now.md"
+  print_section "Decisions (active)" "$(grep -E '^- D[0-9]+ *\| *[0-9-]+ *\| *active *\|' "$dir/decisions.md")"
+  print_section "Verified facts (active)" "$(grep -E '^- F[0-9]+ *\|[^|]*\|[^|]*\| *active *\|' "$dir/facts.md")"
+  print_section "Sources" "$(grep -v '^[[:space:]]*$' "$dir/sources.md")"
+  print_section "Traps" "$(grep -v '^[[:space:]]*$' "$dir/traps.md")"
+  print_section "Artifacts" "$(grep -v '^[[:space:]]*$' "$dir/artifacts.md")"
+  print_section "Log (last 5)" "$(grep -v '^[[:space:]]*$' "$dir/log.md" | tail -5)"
+}
+
+lint_dir() {
+  local dir="$1" size status=0
+  [ -f "$dir/now.md" ] || { echo "$dir: missing now.md"; return 1; }
+  size=$(find "$dir" -type f ! -name history.md ! -name .DS_Store -exec cat {} + | wc -c | tr -d ' ')
+  if [ "$size" -gt "$SIZE_CAP_BYTES" ]; then
+    echo "workstream is $size bytes without history.md, over the ${SIZE_CAP_BYTES}-byte cap: trim it (context skill, Trim)"
+    status=1
+  fi
+  set -- $(find "$dir" -type f ! -name .DS_Store | sort)
+  awk "$LINT_AWK" "$@" || status=1
+  return $status
+}
+
+cmd_lint() {
+  lint_dir "$1" && echo ok
+}
+
+highest_id() {
+  local kind="$1"
+  shift
+  cat "$@" 2>/dev/null | sed -nE "s/^- ${kind}([0-9]+) *\|.*/\1/p" | sort -n | tail -1
+}
+
+cmd_next_id() {
+  [ $# -ge 2 ] || die "usage: ctx next-id <session> <D|F|S>"
+  local session="$1" kind="$2" slug highest reserved next
+  case "$kind" in
+    D|F|S) ;;
+    *) die "kind must be D, F or S" ;;
+  esac
+  validate_session "$session"
+  slug=$(cmd_current "$session")
+  [ -n "$slug" ] || die "session has no workstream: $session"
+  acquire_lock
+  highest=$(highest_id "$kind" "$WS_DIR/$slug"/*.md "$(draft_dir "$session" "$slug")"/*.md)
+  reserved=$(cat "$IDS_DIR/$slug.$kind" 2>/dev/null)
+  next="${highest:-0}"
+  if [ "${reserved:-0}" -gt "$next" ]; then
+    next="$reserved"
+  fi
+  next=$((next + 1))
+  mkdir -p "$IDS_DIR" && echo "$next" > "$IDS_DIR/$slug.$kind"
+  release_lock
+  echo "$kind$next"
+}
+
+workstream_paths() {
+  local dir
+  for dir in "$@"; do
+    if [ -d "$dir" ]; then
+      (cd "$dir" && find . -type f ! -name .DS_Store | sed 's#^\./##')
+    fi
+  done | sort -u
+}
+
+is_append_file() {
+  case " $APPEND_FILES " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+merge_file() {
+  local path="$1" main="$2/$1" ours="$3/$1" base="$4/$1" out="$5/$1" empty="$6"
+  mkdir -p "$(dirname "$out")"
+  [ -e "$main" ] || main="$empty"
+  [ -e "$ours" ] || ours="$empty"
+  [ -e "$base" ] || base="$empty"
+  if cmp -s "$ours" "$base"; then
+    cp "$main" "$out"
+    return 0
+  fi
+  if cmp -s "$main" "$base"; then
+    cp "$ours" "$out"
+    return 0
+  fi
+  if is_append_file "$path"; then
+    git merge-file -p --union "$ours" "$base" "$main" > "$out"
+    return 0
+  fi
+  git merge-file -p -L draft -L base -L main "$ours" "$base" "$main" > "$out"
+}
+
+adopt_merge() {
+  rm -rf "$2" "$4"
+  cp -R "$1" "$2"
+  cp -R "$3" "$4"
+}
+
+cmd_checkpoint() {
+  [ $# -ge 2 ] || die 'usage: ctx checkpoint <session> "<message>" [slug]'
+  local session="$1" message="$2" slug="${3:-}" draft base main staging empty path conflicts="" lint_output
+  validate_session "$session"
+  if [ -z "$slug" ]; then
+    slug=$(cmd_current "$session")
+  fi
+  [ -n "$slug" ] || die "session has no workstream: $session"
+  validate_slug "$slug"
+  [ -d "$WS_DIR/$slug" ] || die "no such workstream: $slug"
+  draft=$(draft_dir "$session" "$slug")
+  base=$(base_dir "$session" "$slug")
+  main="$WS_DIR/$slug"
+  acquire_lock
+  if [ ! -d "$draft" ] || [ ! -d "$base" ]; then
+    reset_draft "$session" "$slug"
+    release_lock
+    echo "No draft for $slug; created a fresh one at $draft."
+    return 0
+  fi
+  staging=$(mktemp -d)
+  empty=$(mktemp)
+  for path in $(workstream_paths "$main" "$draft" "$base"); do
+    merge_file "$path" "$main" "$draft" "$base" "$staging" "$empty" || conflicts="$conflicts $path"
+  done
+  if [ -n "$conflicts" ]; then
+    adopt_merge "$staging" "$draft" "$main" "$base"
+    rm -rf "$staging" "$empty"
+    die "merge conflict in:$conflicts. Nothing was published. Resolve the markers in $draft, keeping both sides' entries, then run ctx checkpoint again."
+  fi
+  if ! lint_output=$(lint_dir "$staging"); then
+    adopt_merge "$staging" "$draft" "$main" "$base"
+    rm -rf "$staging" "$empty"
+    die "lint failed; nothing was published. Fix these in $draft and run ctx checkpoint again:
+$lint_output"
+  fi
+  if diff -rq -x .DS_Store "$staging" "$main" >/dev/null 2>&1; then
+    reset_draft "$session" "$slug"
+    rm -rf "$staging" "$empty"
+    release_lock
+    echo "Nothing new to checkpoint for $slug."
+    return 0
+  fi
+  rm -rf "$main"
+  cp -R "$staging" "$main"
+  rm -rf "$staging" "$empty"
+  commit_main "$slug: $message" "workstreams/$slug" || die "commit failed; $main is updated but not committed"
+  reset_draft "$session" "$slug"
+  render_state
+  release_lock
+  echo "Checkpointed $slug at $(git -C "$CTX_HOME" rev-parse --short HEAD)."
+}
+
+git_repo_name() {
+  local common_dir
+  common_dir=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 0
+  basename "$(dirname "$common_dir")"
+}
+
+git_branch() {
+  git -C "$1" branch --show-current 2>/dev/null
+  return 0
+}
+
+words_of() {
+  tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '\n' | awk 'length($0) >= 3' | grep -vxE "$STOPWORDS" | sort -u
+}
+
+cmd_candidates() {
+  local text="${1:-}" cwd="${2:-$PWD}" query repo
+  query=$( { printf '%s\n' "$text"; git_branch "$cwd"; } | words_of | tr '\n' ' ')
+  repo=$(git_repo_name "$cwd")
+  workstream_rows \
+    | awk -F'\t' -v query="$query" -v repo="$repo" "$CANDIDATE_SCORE_AWK" \
+    | sort -t "$TAB" -k1,1nr -k2,2r \
+    | head -3 \
+    | cut -f3,4
+}
+
+sessions_with_unpublished_edits() {
+  local dir session
+  for dir in "$DRAFTS_DIR"/*/"$1"; do
+    [ -d "$dir" ] || continue
+    session=$(basename "$(dirname "$dir")")
+    if draft_has_edits "$session" "$1"; then
+      printf ' %s' "$session"
+    fi
+  done
+}
+
+attached_sessions() {
+  local session
+  awk -F'\t' '{ latest[$1] = $2 } END { for (session in latest) print session "\t" latest[session] }' "$REGISTRY" \
+    | awk -F'\t' -v slug="$1" -v caller="$2" '$2 == slug && $1 != caller { print $1 }' \
+    | sort \
+    | while read -r session; do
+        if [ -d "$(draft_dir "$session" "$1")" ]; then
+          printf ' %s' "$session"
+        fi
+      done
+}
+
+cmd_archive() {
+  [ $# -ge 1 ] || die "usage: ctx archive <slug> [session] [--force]"
+  local slug="$1" caller="" force="" editors attached
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=yes ;;
+      *) caller="$1" ;;
+    esac
+    shift
+  done
+  validate_slug "$slug"
+  [ ! -d "$ARCHIVE_DIR/$slug" ] || die "already archived: $slug ($ARCHIVE_DIR/$slug)"
+  [ -d "$WS_DIR/$slug" ] || die "no such workstream: $slug"
+  acquire_lock
+  editors=$(sessions_with_unpublished_edits "$slug")
+  [ -z "$editors" ] || die "sessions with unpublished edits to $slug:$editors. Checkpoint or drop them first."
+  attached=$(attached_sessions "$slug" "$caller")
+  if [ -n "$attached" ] && [ -z "$force" ]; then
+    die "sessions still attached to $slug:$attached. Archiving would detach them. Make sure they are done, then run ctx archive $slug ${caller:-<session>} --force."
+  fi
+  git_ctx -C "$CTX_HOME" mv "workstreams/$slug" "archive/$slug" || die "git mv failed for $slug"
+  git_ctx -C "$CTX_HOME" commit -q -m "$slug: archive" || die "commit failed for $slug"
+  rm -rf "$DRAFTS_DIR"/*/"$slug" "$DRAFTS_DIR"/*/.base/"$slug"
+  render_state
+  release_lock
+}
+
+cmd_drop() {
+  validate_session "$1"
+  acquire_lock
+  rm -rf "$DRAFTS_DIR/$1"
+  release_lock
+  echo "Dropped the drafts of $1."
+}
+
+unpublished_slugs() {
+  local dir slug
+  for dir in "$DRAFTS_DIR/$1"/*; do
+    [ -d "$dir" ] || continue
+    slug=$(basename "$dir")
+    if draft_has_edits "$1" "$slug"; then
+      printf ' %s' "$slug"
+    fi
+  done
+}
+
+prune_drafts() {
+  local session_dir session edited
+  for session_dir in "$DRAFTS_DIR"/*; do
+    [ -d "$session_dir" ] || continue
+    session=$(basename "$session_dir")
+    [ "$session" != "$1" ] || continue
+    [ -z "$(find "$session_dir" -type f -mtime -"$IDLE_DAYS" | head -1)" ] || continue
+    edited=$(unpublished_slugs "$session")
+    if [ -n "$edited" ]; then
+      echo "Session $session has unpublished edits to:$edited. Merge with: $CTX_BIN checkpoint $session \"<message>\" <slug>. Or drop with: $CTX_BIN drop $session"
+    else
+      rm -rf "$session_dir"
+    fi
+  done
+  find "$USAGE_DIR" "$NUDGE_DIR" -type f -mtime +"$IDLE_DAYS" -delete 2>/dev/null
+  return 0
+}
+
+hook_field() {
+  printf '%s' "$1" | jq -r --arg key "$2" '.[$key] // empty' 2>/dev/null
+}
+
+is_subagent_input() {
+  [ -n "$(hook_field "$1" agent_id)" ] && return 0
+  case "$(hook_field "$1" transcript_path)" in
+    */subagents/*) return 0 ;;
+  esac
+  return 1
+}
+
+emit_context() {
+  [ -n "$2" ] || return 0
+  jq -n --arg event "$1" --arg text "$2" '{hookSpecificOutput: {hookEventName: $event, additionalContext: $text}}'
+}
+
+join_lines() {
+  local line
+  for line in "$@"; do
+    if [ -n "$line" ]; then
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
+previous_workstream_in_folder() {
+  local slug
+  slug=$(awk -F'\t' -v session="$1" -v cwd="$2" '$3 == cwd && $1 != session && $2 != "none" { slug = $2 } END { print slug }' "$REGISTRY")
+  if [ -n "$slug" ] && [ -d "$WS_DIR/$slug" ]; then
+    echo "$slug"
+  fi
+}
+
+registered_start_context() {
+  echo "This session (\`$1\`) is on workstream \`$2\`. Run \`$CTX_BIN show $1\` and read it before continuing. Edit only the files in $(draft_dir "$1" "$2")."
+  if draft_has_edits "$1" "$2"; then
+    echo "The draft has unpublished edits. Run \`$CTX_BIN checkpoint $1 \"<message>\"\` to merge them with other sessions' changes."
+  fi
+}
+
+unregistered_start_context() {
+  local previous
+  echo "Workstream index:"
+  echo
+  head -c "$INJECT_CAP_BYTES" "$STATE"
+  if [ "$(wc -c < "$STATE" | tr -d ' ')" -gt "$INJECT_CAP_BYTES" ]; then
+    echo
+    echo "(index truncated; run $CTX_BIN list for the rest)"
+  fi
+  echo
+  echo "This session (\`$1\`) has no workstream yet. Follow the context rule in ~/.claude/CLAUDE.md at the first user message."
+  previous=$(previous_workstream_in_folder "$1" "$2")
+  if [ -n "$previous" ]; then
+    echo "The previous session in this folder was on \`$previous\`: offer it first."
+  fi
+}
+
+cmd_hook_start() {
+  local input session cwd source slug context warnings
+  input=$(cat)
+  session=$(hook_field "$input" session_id)
+  [ -n "$session" ] || return 0
+  if is_subagent_input "$input"; then
+    return 0
+  fi
+  validate_session "$session"
+  cwd=$(hook_field "$input" cwd)
+  source=$(hook_field "$input" source)
+  if [ "$source" = compact ]; then
+    rm -f "$NUDGE_DIR/$session"
+  fi
+  acquire_lock
+  warnings=$(prune_drafts "$session")
+  slug=$(cmd_current "$session")
+  if [ -n "$slug" ]; then
+    refresh_draft "$session" "$slug"
+  fi
+  render_state
+  release_lock
+  if [ -n "$slug" ]; then
+    context=$(registered_start_context "$session" "$slug")
+  else
+    context=$(unregistered_start_context "$session" "$cwd" "$source")
+  fi
+  emit_context SessionStart "$(join_lines "ctx v$CTX_VERSION" "$context" "$warnings")"
+}
+
+declared_workstream() {
+  local slug
+  slug=$(printf '%s\n' "$1" | grep -oE 'Context: [^[:space:]]*/workstreams/[a-z0-9][a-z0-9-]*' | head -1 | sed -E 's#.*/workstreams/##')
+  if [ -n "$slug" ] && [ -d "$WS_DIR/$slug" ]; then
+    echo "$slug"
+  fi
+}
+
+workstream_summary() {
+  workstream_rows | awk -F'\t' -v slug="$1" '$1 == slug { print $5 }'
+}
+
+shortlist_candidates() {
+  local previous="$1"
+  {
+    if [ -n "$previous" ]; then
+      printf '%s\t%s (last used in this folder)\n' "$previous" "$(workstream_summary "$previous")"
+    fi
+    cmd_candidates "$2" "$3" | awk -F'\t' -v skip="$previous" '$1 != skip'
+  } | head -2
+}
+
+shortlist_instruction() {
+  local session="$1" slug summary number=0 previous
+  previous=$(previous_workstream_in_folder "$session" "$3")
+  echo "This session (\`$session\`) has no workstream yet. Before any other work, ask the user with AskUserQuestion which workstream it belongs to. Offer these options in this order:"
+  while IFS="$TAB" read -r slug summary; do
+    number=$((number + 1))
+    echo "$number. \`$slug\`: $summary"
+  done < <(shortlist_candidates "$previous" "$2" "$3")
+  echo "$((number + 1)). New workstream (propose a short kebab-case slug)"
+  echo "$((number + 2)). No context file (one-off; nothing is saved)"
+  echo "If the user answers with Other, match the text against $STATE; if nothing matches, treat it as a new workstream title."
+  echo "Then run exactly one of these, and for a workstream run \`$CTX_BIN show $session\`:"
+  echo "  $CTX_BIN register $session <slug>"
+  echo "  $CTX_BIN new <slug> \"<title>\" $session"
+  echo "  $CTX_BIN register $session none"
+}
+
+transcript_percent() {
+  [ -r "$1" ] || return 0
+  tail -n 400 "$1" \
+    | jq -R 'fromjson? | objects | select(.type == "assistant" and (.isSidechain | not) and (.isApiErrorMessage | not)) | (.message.usage? // empty) | objects | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)' 2>/dev/null \
+    | tail -1 \
+    | awk -v window="$CONTEXT_WINDOW_TOKENS" 'NF && window > 0 { printf "%d\n", $1 * 100 / window }'
+}
+
+context_percent() {
+  local percent
+  percent=$(cat "$USAGE_DIR/$1" 2>/dev/null)
+  case "$percent" in
+    ''|*[!0-9]*) transcript_percent "$2" ;;
+    *) echo "$percent" ;;
+  esac
+}
+
+nudge_message() {
+  local session="$1" slug="$2" percent bucket last_bucket marker
+  percent=$(context_percent "$session" "$3")
+  case "$percent" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$percent" -ge "$NUDGE_START_PERCENT" ] || return 0
+  bucket=$(( (percent - NUDGE_START_PERCENT) / NUDGE_STEP_PERCENT ))
+  marker="$NUDGE_DIR/$session"
+  last_bucket=$(cat "$marker" 2>/dev/null)
+  case "$last_bucket" in
+    ''|*[!0-9]*) last_bucket=-1 ;;
+  esac
+  [ "$bucket" -gt "$last_bucket" ] || return 0
+  mkdir -p "$NUDGE_DIR" && echo "$bucket" > "$marker"
+  if [ -n "$slug" ]; then
+    echo "Context is at $percent%. Handle the user's request first. At the next milestone run \`$CTX_BIN checkpoint $session \"<message>\"\`. Only when the current task is finished or you are waiting on the user, never mid-task, tell the user in one line that it is safe to /clear."
+  else
+    echo "Context is at $percent%. Only when the current task is finished or you are waiting on the user, never mid-task, tell the user in one line that a /clear or a fresh session would keep answers sharp."
+  fi
+}
+
+cmd_hook_prompt() {
+  local input session cwd prompt transcript slug declared message=""
+  input=$(cat)
+  session=$(hook_field "$input" session_id)
+  [ -n "$session" ] || return 0
+  if is_subagent_input "$input"; then
+    return 0
+  fi
+  validate_session "$session"
+  cwd=$(hook_field "$input" cwd)
+  prompt=$(hook_field "$input" prompt)
+  transcript=$(hook_field "$input" transcript_path)
+  slug=$(cmd_current "$session")
+  if [ -z "$slug" ]; then
+    declared=$(declared_workstream "$prompt")
+    if [ -n "$declared" ]; then
+      cmd_register "$session" "$declared" "$cwd" >/dev/null
+      slug="$declared"
+      message="Registered this session (\`$session\`) to workstream \`$declared\` from the Context line. Run \`$CTX_BIN show $session\` before starting; edit only the files in $(draft_dir "$session" "$declared")."
+    elif [ "$(latest_registration "$session")" != none ]; then
+      message=$(shortlist_instruction "$session" "$prompt" "$cwd")
+    fi
+  fi
+  message=$(join_lines "$message" "$(nudge_message "$session" "$slug" "$transcript")")
+  emit_context UserPromptSubmit "$message"
+}
+
+cmd_statusline() {
+  local input session percent next
+  input=$(cat)
+  session=$(hook_field "$input" session_id)
+  percent=$(printf '%s' "$input" | jq -r '.context_window.used_percentage // empty | floor' 2>/dev/null)
+  if [ -n "$percent" ] && printf '%s\n' "$session" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+    mkdir -p "$USAGE_DIR" && echo "$percent" > "$USAGE_DIR/$session"
+  fi
+  next=$(cat "$STATUSLINE_NEXT" 2>/dev/null)
+  [ -n "$next" ] || return 0
+  printf '%s' "$input" | /bin/bash -c "$next"
+}
+
+doctor_line() {
+  if [ "$2" -eq 0 ]; then
+    echo "ok   $1"
+  else
+    echo "FAIL $1"
+    DOCTOR_FAILURES=$((DOCTOR_FAILURES + 1))
+  fi
+}
+
+cmd_doctor() {
+  local settings="${CTX_SETTINGS:-$HOME/.claude/settings.json}" dir probe
+  DOCTOR_FAILURES=0
+  git -C "$CTX_HOME" rev-parse -q --verify main >/dev/null
+  doctor_line "context repository has a main branch" $?
+  jq -e --arg c "$CTX_BIN hook start" '[.hooks.SessionStart[]?.hooks[]?.command] | index($c)' "$settings" >/dev/null 2>&1
+  doctor_line "SessionStart hook installed" $?
+  jq -e --arg c "$CTX_BIN hook prompt" '[.hooks.UserPromptSubmit[]?.hooks[]?.command] | index($c)' "$settings" >/dev/null 2>&1
+  doctor_line "UserPromptSubmit hook installed" $?
+  jq -e --arg c "$CTX_BIN statusline" '.statusLine.command == $c' "$settings" >/dev/null 2>&1
+  doctor_line "status line wrapper installed" $?
+  if [ -s "$STATUSLINE_NEXT" ]; then
+    doctor_line "original status line saved in $STATUSLINE_NEXT" 0
+  else
+    echo "info no original status line; the wrapper only records context use"
+  fi
+  for dir in "$WS_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    lint_dir "${dir%/}" >/dev/null
+    doctor_line "lint $(basename "$dir")" $?
+  done
+  probe=$(printf '{"session_id":"doctor-probe","cwd":"/","source":"startup"}' | "$CTX_BIN" hook start | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null)
+  case "$probe" in
+    "ctx v$CTX_VERSION"*) doctor_line "start hook answers" 0 ;;
+    *) doctor_line "start hook answers" 1 ;;
+  esac
+  [ "$DOCTOR_FAILURES" -eq 0 ]
+}
+
+run_hook() {
+  (
+    command -v jq >/dev/null 2>&1 || exit 0
+    ensure_dirs
+    case "$1" in
+      start) cmd_hook_start ;;
+      prompt) cmd_hook_prompt ;;
+    esac
+  ) 2>/dev/null
+  exit 0
+}
+
+main() {
+  local command="${1:-}"
+  case "$command" in
+    hook) run_hook "${2:-}" ;;
+    statusline)
+      cmd_statusline 2>/dev/null
+      exit 0
+      ;;
+  esac
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  ensure_dirs
+  [ $# -gt 0 ] && shift
+  case "$command" in
+    list) cmd_list ;;
+    render) cmd_render ;;
+    new) cmd_new "$@" ;;
+    register) cmd_register "$@" ;;
+    current)
+      [ $# -ge 1 ] || die "usage: ctx current <session>"
+      cmd_current "$1"
+      ;;
+    show)
+      [ $# -ge 1 ] || die "usage: ctx show <session>"
+      cmd_show "$1"
+      ;;
+    next-id) cmd_next_id "$@" ;;
+    lint)
+      [ $# -ge 1 ] || die "usage: ctx lint <dir>"
+      cmd_lint "$1"
+      ;;
+    checkpoint) cmd_checkpoint "$@" ;;
+    archive) cmd_archive "$@" ;;
+    drop)
+      [ $# -ge 1 ] || die "usage: ctx drop <session>"
+      cmd_drop "$1"
+      ;;
+    candidates) cmd_candidates "$@" ;;
+    doctor) cmd_doctor ;;
+    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | doctor | hook start | hook prompt | statusline" ;;
+  esac
+}
+
+main "$@"
