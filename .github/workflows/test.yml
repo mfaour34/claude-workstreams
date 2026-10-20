@@ -21,3 +21,8 @@ jobs:
         run: tests/ctx-test.sh
       - name: install tests
         run: tests/install-test.sh
+      - name: pane plugin
+        run: |
+          npx -y @anthropic-ai/claude-code@2.1.299 plugin validate .
+          npx -y @anthropic-ai/claude-code@2.1.299 plugin validate pane
+          npx -y @anthropic-ai/claude-code@2.1.299 plugin test pane

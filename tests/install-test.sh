@@ -2,6 +2,7 @@
 set -u
 export LC_ALL=C
 
+unset CTX_HOME CLAUDE_DIR CTX_SETTINGS CTX_REPO_URL
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=0
 
@@ -24,6 +25,17 @@ assert_contains() {
   esac
 }
 
+STUB_DIR=$(mktemp -d)
+CLAUDE_CALLS="$STUB_DIR/calls"
+export CLAUDE_CALLS
+cat > "$STUB_DIR/claude" <<'STUB'
+#!/bin/bash
+echo "$*" >> "$CLAUDE_CALLS"
+[ "${CLAUDE_STUB_FAIL:-}" != "$2" ]
+STUB
+chmod +x "$STUB_DIR/claude"
+export PATH="$STUB_DIR:$PATH"
+
 FAKE_HOME=$(mktemp -d)
 export HOME="$FAKE_HOME"
 export GIT_CONFIG_GLOBAL="$FAKE_HOME/.gitconfig"
@@ -39,6 +51,7 @@ cp "$CLAUDE_DIR/CLAUDE.md" "$FAKE_HOME/CLAUDE.original.md"
 
 out=$("$REPO_DIR/install.sh" 2>&1)
 assert_eq "$?" "0" "install succeeds"
+assert_eq "$([ -e "$CLAUDE_CALLS" ] && echo called || echo untouched)" "untouched" "without --with-pane the claude CLI is not called"
 assert_contains "$out" "ok   start hook answers" "doctor runs at the end"
 assert_eq "$(cat "$CTX_HOME/.source")" "$REPO_DIR" "records the checkout it was installed from"
 backups_after_first=$(find "$CLAUDE_DIR" -name '*.bak-claude-workstreams-*' | wc -l | tr -d ' ')
@@ -81,6 +94,31 @@ export GIT_CONFIG_GLOBAL="$FAKE_HOME/.gitconfig"
 assert_eq "$?" "0" "install into an empty home succeeds"
 "$REPO_DIR/uninstall.sh" >/dev/null 2>&1
 assert_eq "$(jq -c . "$FAKE_HOME/.claude/settings.json")" "{}" "uninstall leaves empty settings empty"
+rm -rf "$FAKE_HOME"
+
+FAKE_HOME=$(mktemp -d)
+export HOME="$FAKE_HOME"
+export GIT_CONFIG_GLOBAL="$FAKE_HOME/.gitconfig"
+: > "$CLAUDE_CALLS"
+out=$("$REPO_DIR/install.sh" --with-pane 2>&1)
+assert_eq "$?" "0" "install --with-pane succeeds"
+assert_eq "$(cat "$CLAUDE_CALLS")" "plugin marketplace add $REPO_DIR
+plugin install workstream-pane@claude-workstreams" "adds the checkout as a marketplace and installs the pane"
+assert_contains "$out" "Installed the workstream pane" "says so"
+: > "$CLAUDE_CALLS"
+CLAUDE_STUB_FAIL=marketplace "$REPO_DIR/install.sh" --with-pane >/dev/null 2>&1
+assert_eq "$?" "0" "a marketplace that is already added is updated instead"
+assert_contains "$(cat "$CLAUDE_CALLS")" "plugin marketplace update claude-workstreams" "updates it"
+out=$(CLAUDE_STUB_FAIL=install "$REPO_DIR/install.sh" --with-pane 2>&1)
+assert_eq "$?" "1" "a failed plugin install fails the installer"
+assert_contains "$out" "could not install the workstream pane" "says why"
+out=$("$REPO_DIR/install.sh" --bogus 2>&1)
+assert_eq "$?" "1" "an unknown option fails"
+: > "$CLAUDE_CALLS"
+"$REPO_DIR/uninstall.sh" >/dev/null 2>&1
+assert_eq "$(cat "$CLAUDE_CALLS")" "plugin uninstall workstream-pane@claude-workstreams
+plugin marketplace remove claude-workstreams" "uninstall removes the pane and its marketplace"
+rm -f "$CLAUDE_CALLS"
 rm -rf "$FAKE_HOME"
 
 FAKE_HOME=$(mktemp -d)
@@ -152,7 +190,7 @@ assert_eq "$(cat "$ONE_LINE_HOME/.source")" "$ONE_LINE_HOME/.src" "clones its so
 assert_eq "$(jq -cn '{session_id: "s1", cwd: "/tmp", source: "startup"}' | "$ONE_LINE_HOME/bin/ctx" hook start | jq -r '.hookSpecificOutput.additionalContext' | head -1)" "ctx v2" "installs the latest release"
 assert_contains "$("$ONE_LINE_HOME/bin/ctx" update 2>&1)" "Already up to date" "update works after a one-line install"
 assert_eq "$(git -C "$ONE_LINE_HOME" status --short)" "" "the context repository ignores the source clone and the script"
-rm -rf "$WORK"
+rm -rf "$WORK" "$STUB_DIR"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

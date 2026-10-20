@@ -1,0 +1,9 @@
+{
+  "name": "workstream-pane",
+  "version": "0.1.0",
+  "description": "Shows this session's claude-workstreams workstream, draft state and context use in a pane",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Mohammed Faour"
+  }
+}
