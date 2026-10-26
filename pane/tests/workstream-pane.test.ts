@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { ago, ctxFromSettings, workstreamBody } from '../hooks/register'
+import { ago, ctxFromSettings, kilo, usedTokens, workstreamBody } from '../hooks/register'
 
 const CTX = '/home/me/.claude/context/bin/ctx'
 const SETTINGS = JSON.stringify({
@@ -40,7 +40,7 @@ const STATUS = {
   show: SHOW,
   draft: { dir: '/d', changed: ['log.md', 'now.md'] },
   last_checkpoint: { commit: 'abc1234', date: '2026-10-20T10:00:00Z', subject: 'alpha: create' },
-  context: { percent: null, next_nudge_percent: 50 },
+  context: { tokens: null, next_nudge_tokens: 120000 },
   workstreams: [
     { slug: 'alpha', status: 'active', updated: '2026-10-20', title: 'Alpha', summary: 'Alpha summary', repos: '-' },
     { slug: 'beta', status: 'paused', updated: '2026-10-01', title: 'Beta', summary: 'Beta summary', repos: '-' },
@@ -67,7 +67,7 @@ function fakeHost(on: On, status: object, calls: string[][], placements: boolean
   on('ui.close', () => ({ value: undefined }))
   on('fs.read', () => ({ value: SETTINGS }))
   on('session.id', () => ({ value: 's1' }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1_000_000, percent: 37 }, rateLimits: [] } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000, percent: 37 }, rateLimits: [] } }))
   on('process.run', ($, e) => {
     calls.push([...e.argv])
     if (e.argv[1] === 'status') {
@@ -90,6 +90,14 @@ test('drops the header and frontmatter from the show view', async () => {
   expect(workstreamBody('## Goal\n\nOnly now.')).toEqual({ now: '## Goal\n\nOnly now.', details: '' })
 })
 
+test('turns context use into a token count', async () => {
+  expect(usedTokens({ window: 200_000, percent: 37 })).toBe(74_000)
+  expect(usedTokens({ window: 1_000_000, percent: null })).toBe(null)
+  expect(usedTokens(undefined)).toBe(null)
+  expect(kilo(80_000)).toBe('80k')
+  expect(kilo(124_600)).toBe('125k')
+})
+
 test('says how long ago a checkpoint was', async () => {
   const now = Date.parse('2026-10-20T12:00:00Z')
   expect(ago('2026-10-20T11:59:50Z', now)).toBe('just now')
@@ -105,7 +113,7 @@ test('shows the workstream, draft, context and index on every surface', async ($
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ text: 'Unpublished: log.md, now.md' })).toBeDefined()
-    expect(await ui.find({ text: '37% used, next nudge at 50%' })).toBeDefined()
+    expect(await ui.find({ text: '74k tokens used, next nudge at 120k' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /ago \(abc1234\)$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^create$/ })).toBeDefined()
     expect(await ui.find({ type: 'Markdown', text: '## Goal' })).toBeDefined()

@@ -11,7 +11,7 @@ const HOOK_SUFFIX = ' hook start'
 const status = atom({ plugin: 'workstream-pane', key: 'status' } as const, null)
 const problem = atom({ plugin: 'workstream-pane', key: 'problem' } as const, '')
 const note = atom({ plugin: 'workstream-pane', key: 'note' } as const, '')
-const percent = atom({ plugin: 'workstream-pane', key: 'percent' } as const, null)
+const tokens = atom({ plugin: 'workstream-pane', key: 'tokens' } as const, null)
 const expanded = atom({ plugin: 'workstream-pane', key: 'expanded' } as const, false)
 const isPaneOpen = atom({ plugin: 'workstream-pane', key: 'isPaneOpen' } as const, false)
 
@@ -44,6 +44,15 @@ export function ago(iso: string, now: number): string {
   return `${Math.round(minutes / 1440)} days ago`
 }
 
+export function kilo(count: number): string {
+  return `${Math.round(count / 1000)}k`
+}
+
+export function usedTokens(context: { window?: number | null; percent?: number | null } | undefined): number | null {
+  if (typeof context?.window !== 'number' || typeof context.percent !== 'number') return null
+  return Math.floor((context.window * context.percent) / 100)
+}
+
 async function findCtx($: EngineInterface): Promise<string | undefined> {
   const home = await $.env.get('HOME')
   const text = await $.fs.read(`${home}/.claude/settings.json`).catch(() => '{}')
@@ -56,7 +65,7 @@ function keep<T>(old: T, value: T): T {
 
 async function refresh($: EngineInterface): Promise<void> {
   const usage = await $.session.usage().catch(() => undefined)
-  await update($, percent, old => keep(old, usage?.context.percent ?? null))
+  await update($, tokens, old => keep(old, usedTokens(usage?.context)))
   const ctx = await findCtx($)
   if (!ctx) {
     await update($, problem, old => keep(old, 'No ctx hook in ~/.claude/settings.json. Run install.sh from claude-workstreams.'))
@@ -149,7 +158,7 @@ export const register: Register = on => {
     const error = await read($, problem)
     const message = await read($, note)
     const isExpanded = await read($, expanded)
-    const used = (await read($, percent)) ?? current?.context.percent ?? null
+    const used = (await read($, tokens)) ?? current?.context.tokens ?? null
 
     const section = (key: string, title: string, children: RenderChildren[]) => (
       <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1} gap={1}>
@@ -224,7 +233,7 @@ export const register: Register = on => {
                 <Text dimColor>None yet</Text>
               ),
             ),
-            row('Context', <Text>{used === null ? 'unknown' : `${used}% used`}, next nudge at {current.context.next_nudge_percent}%</Text>),
+            row('Context', <Text>{used === null ? 'unknown' : `${kilo(used)} tokens used`}, next nudge at {kilo(current.context.next_nudge_tokens)}</Text>),
           ])}
         {current.workstream !== null &&
           Input &&
