@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/mfaour34/claude-workstreams/main/in
 ## How it works
 
 <p align="center">
-  <img src="assets/how.png" width="880" alt="How it works: a session starts and a hook asks which workstream it belongs to; it reads ctx show (about 4k tokens); it works in a private draft; at each milestone ctx checkpoint merges, lints and commits; when context passes 40% it is nudged to checkpoint, never mid-task; after /clear the same workstream is offered first.">
+  <img src="assets/how.png" width="880" alt="How it works: a session starts and a hook asks which workstream it belongs to; it reads ctx show (about 4k tokens); it works in a private draft; at each milestone ctx checkpoint merges, lints and commits; at 80k tokens it is nudged to checkpoint and at 120k to clear, never mid-task; after /clear the same workstream is offered first.">
 </p>
 
 Every session works from a **workstream**: a small folder of Markdown files with the goal, the current state, dated decisions, sourced facts, traps and a log. Two hooks and one bash script keep it current; a local git repository keeps its history.
@@ -134,7 +134,7 @@ To turn the daily push off again: `git -C <context folder> config ctx.dailypush 
 
 A Claude Code plugin that opens a **Workstream** pane beside the conversation, in the Claude desktop app and the fullscreen terminal. Under a header with the session's workstream (or "No workstream yet"), it has four sections:
 
-- **Status:** the draft (clean, or which files have unpublished edits), the last checkpoint and how long ago it was, context used and the threshold of the next nudge;
+- **Status:** the draft (clean, or which files have unpublished edits), the last checkpoint and how long ago it was, tokens used and the threshold of the next nudge;
 - **Checkpoint:** a message field and a button;
 - **Now:** the goal, current state and next steps, with active decisions, facts and the log behind a toggle;
 - **Other workstreams:** the rest of the index.
@@ -216,12 +216,14 @@ A workstream stays under 30 KB, `history.md` excluded.
 <details>
 <summary><strong>The context nudge</strong></summary>
 
-The prompt hook needs the session's context size:
+The prompt hook needs the session's context size in tokens:
 
-- **Terminal CLI:** the status line wrapper records `context_window.used_percentage`.
-- **Desktop app:** the status line never runs there, so the hook reads the last main-thread token usage from the transcript against a 1,000,000-token window. Set `CTX_CONTEXT_WINDOW_TOKENS` (for example `200000`) in the environment Claude Code runs in to change that.
+- **Terminal CLI:** the status line wrapper records the tokens of the last request (`context_window.current_usage`), or `used_percentage` of the window when that is missing.
+- **Desktop app:** the status line never runs there, so the hook reads the last main-thread token usage from the transcript.
 
-At 40%, and every 10% after, the agent is told to checkpoint at the next milestone and to suggest `/clear` only once the task is finished.
+The nudge works in absolute tokens, whatever the window size: answers get worse well before a 1M-token window is full. At 80k the agent is told to checkpoint at the next milestone and to suggest `/clear` once the task is finished. At 120k, and every 40k after, it is told to finish the step in progress, start nothing new, checkpoint and ask for a `/clear` before the next task. Neither ever interrupts a task midway.
+
+Set `CTX_NUDGE_TOKENS` (default `80000`) and `CTX_NUDGE_FIRM_TOKENS` (default `120000`) in the environment Claude Code runs in to move the two thresholds. `CTX_CONTEXT_WINDOW_TOKENS` (default `1000000`) is only used to turn a status line percentage into tokens when the status line reports no token counts and no window size.
 
 </details>
 

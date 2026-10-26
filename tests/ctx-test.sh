@@ -556,11 +556,11 @@ test_hook_start_prunes_idle_drafts() {
 
 test_hook_start_resets_nudge_on_compact() {
   "$CTX" new alpha "Alpha" s1 >/dev/null
-  set_usage s1 55
+  set_usage s1 130000
   hook_prompt_input s1 /tmp x | "$CTX" hook prompt >/dev/null
   hook_start_input s1 /tmp/x compact | "$CTX" hook start >/dev/null
-  set_usage s1 42
-  assert_contains "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)" "Context is at 42%" "nudges again after compaction"
+  set_usage s1 85000
+  assert_contains "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)" "Context is at 85k tokens" "nudges again after compaction"
 }
 
 test_hooks_ignore_subagents_and_garbage() {
@@ -625,54 +625,104 @@ test_hook_prompt_registers_from_context_line() {
   assert_eq "$([ -d "$CTX_HOME/.drafts/s9/alpha" ] && echo yes)" "yes" "creates the draft"
 }
 
-test_hook_prompt_nudges_at_percentage_steps() {
+test_hook_prompt_nudges_at_token_thresholds() {
   local out
   "$CTX" new alpha "Alpha" s1 >/dev/null
-  set_usage s1 39
-  assert_eq "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt)" "" "no nudge at 39%"
-  set_usage s1 40
+  set_usage s1 79999
+  assert_eq "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt)" "" "no nudge below 80k"
+  set_usage s1 80000
   out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
-  assert_contains "$out" "Context is at 40%" "nudges at 40%"
+  assert_contains "$out" "Context is at 80k tokens, past 80k" "nudges at 80k"
   assert_contains "$out" "never mid-task" "never interrupts active work"
   assert_contains "$out" "checkpoint s1" "names the checkpoint command"
-  set_usage s1 45
-  assert_eq "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt)" "" "not again within the same step"
-  set_usage s1 50
-  assert_contains "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)" "Context is at 50%" "nudges again at 50%"
+  assert_contains "$out" "safe to /clear" "suggests a clear once the task is done"
+  set_usage s1 110000
+  assert_eq "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt)" "" "not again before 120k"
+  set_usage s1 120000
+  out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
+  assert_contains "$out" "Context is at 120k tokens, past 120k" "firm nudge at 120k"
+  assert_contains "$out" "start nothing new" "stops new work"
+  assert_contains "$out" "never stop mid-task" "still finishes the step in progress"
+  assert_contains "$out" "checkpoint s1" "checkpoints before the clear"
+  assert_contains "$out" "reloads with" "says the workstream reloads"
+  set_usage s1 159999
+  assert_eq "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt)" "" "not again before 160k"
+  set_usage s1 160000
+  assert_contains "$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)" "past 160k" "again every 40k after"
+}
+
+test_hook_prompt_skips_to_the_firm_nudge() {
+  local out
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  set_usage s1 130000
+  out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
+  assert_contains "$out" "Context is at 130k tokens, past 120k" "first nudge above 120k is the firm one"
+  assert_contains "$out" "start nothing new" "with the firm wording"
+}
+
+test_hook_prompt_nudges_without_a_workstream() {
+  local out
+  "$CTX" register s1 none >/dev/null
+  set_usage s1 90000
+  out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
+  assert_contains "$out" "Context is at 90k tokens" "nudges a session with no context file"
+  assert_contains "$out" "fresh session would keep answers sharp" "suggests a fresh session"
+  assert_not_contains "$out" "checkpoint" "has nothing to checkpoint"
+  set_usage s1 125000
+  out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
+  assert_contains "$out" "start nothing new" "firm nudge too"
+  assert_not_contains "$out" "checkpoint" "still nothing to checkpoint"
 }
 
 test_hook_prompt_nudges_from_transcript_without_status_line() {
   local transcript="$CTX_HOME/transcript.jsonl"
   "$CTX" new alpha "Alpha" s1 >/dev/null
-  write_transcript "$transcript" 399000
-  assert_eq "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt)" "" "no nudge at 39% of a 1M window"
-  write_transcript "$transcript" 400000
-  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt | additional_context)" "Context is at 40%" "nudges at 40% of a 1M window"
+  write_transcript "$transcript" 79000
+  assert_eq "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt)" "" "no nudge at 79k"
+  write_transcript "$transcript" 80000
+  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt | additional_context)" "Context is at 80k tokens" "nudges at 80k from the transcript"
 }
 
 test_transcript_fallback_skips_sidechain_and_api_error_lines() {
   local transcript="$CTX_HOME/transcript.jsonl"
   "$CTX" new alpha "Alpha" s1 >/dev/null
-  write_transcript "$transcript" 520000
+  write_transcript "$transcript" 95000
   jq -cn '{type: "assistant", isSidechain: true, message: {usage: {input_tokens: 990000}}}' >> "$transcript"
   jq -cn '{type: "assistant", isApiErrorMessage: true, message: {usage: {input_tokens: 0}}}' >> "$transcript"
   echo 'garbage line' >> "$transcript"
-  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt | additional_context)" "Context is at 52%" "uses the last main-thread usage"
+  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt | additional_context)" "Context is at 95k tokens" "uses the last main-thread usage"
 }
 
-test_status_line_percentage_wins_over_transcript() {
+test_status_line_tokens_win_over_transcript() {
   local transcript="$CTX_HOME/transcript.jsonl"
   "$CTX" new alpha "Alpha" s1 >/dev/null
   write_transcript "$transcript" 900000
-  set_usage s1 45
-  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt | additional_context)" "Context is at 45%" "status line value is used"
+  set_usage s1 85000
+  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | "$CTX" hook prompt | additional_context)" "Context is at 85k tokens" "status line value is used"
 }
 
-test_context_window_can_be_overridden() {
+test_thresholds_ignore_the_window_size() {
   local transcript="$CTX_HOME/transcript.jsonl"
   "$CTX" new alpha "Alpha" s1 >/dev/null
-  write_transcript "$transcript" 100000
-  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | CTX_CONTEXT_WINDOW_TOKENS=200000 "$CTX" hook prompt | additional_context)" "Context is at 50%" "200k window"
+  write_transcript "$transcript" 80000
+  assert_contains "$(hook_prompt_input s1 /tmp x "$transcript" | CTX_CONTEXT_WINDOW_TOKENS=200000 "$CTX" hook prompt | additional_context)" "Context is at 80k tokens" "same threshold on a 200k window"
+}
+
+test_thresholds_can_be_overridden() {
+  "$CTX" new alpha "Alpha" s1 >/dev/null
+  set_usage s1 55000
+  assert_contains "$(hook_prompt_input s1 /tmp x | CTX_NUDGE_TOKENS=50000 CTX_NUDGE_FIRM_TOKENS=70000 "$CTX" hook prompt | additional_context)" "past 50k" "custom soft threshold"
+  set_usage s1 70000
+  assert_contains "$(hook_prompt_input s1 /tmp x | CTX_NUDGE_TOKENS=50000 CTX_NUDGE_FIRM_TOKENS=70000 "$CTX" hook prompt | additional_context)" "past 70k" "custom firm threshold"
+  "$CTX" new beta "Beta" s2 >/dev/null
+  set_usage s2 79000
+  assert_eq "$(hook_prompt_input s2 /tmp x | CTX_NUDGE_TOKENS=abc CTX_NUDGE_FIRM_TOKENS=-5 "$CTX" hook prompt)" "" "bad values fall back to 80k"
+  set_usage s2 80000
+  assert_contains "$(hook_prompt_input s2 /tmp x | CTX_NUDGE_TOKENS=abc CTX_NUDGE_FIRM_TOKENS=-5 "$CTX" hook prompt | additional_context)" "past 80k" "and still nudge"
+  "$CTX" new gamma "Gamma" s3 >/dev/null
+  assert_eq "$(CTX_NUDGE_TOKENS=100000 CTX_NUDGE_FIRM_TOKENS=90000 "$CTX" status s3 | jq -r .context.next_nudge_tokens)" "100000" "soft threshold first"
+  mkdir -p "$CTX_HOME/.nudges" && echo 0 > "$CTX_HOME/.nudges/s3"
+  assert_eq "$(CTX_NUDGE_TOKENS=100000 CTX_NUDGE_FIRM_TOKENS=90000 "$CTX" status s3 | jq -r .context.next_nudge_tokens)" "140000" "a firm threshold below the soft one becomes soft + 40k"
 }
 
 test_hook_prompt_is_fast() {
@@ -686,14 +736,21 @@ test_hook_prompt_is_fast() {
   assert_eq "$([ "$elapsed_ms" -lt 1000 ] && echo fast || echo "slow ${elapsed_ms}ms")" "fast" "under one second with 20 workstreams"
 }
 
-test_statusline_records_percentage_and_runs_original() {
+test_statusline_records_tokens_and_runs_original() {
   local out
   echo 'echo wrapped' > "$CTX_HOME/.statusline-next"
-  out=$(jq -cn '{session_id: "s1", context_window: {used_percentage: 42.7}}' | "$CTX" statusline)
+  out=$(jq -cn '{session_id: "s1", context_window: {used_percentage: 42.7, context_window_size: 1000000, current_usage: {input_tokens: 2, cache_read_input_tokens: 84000, cache_creation_input_tokens: 998, output_tokens: 500}}}' | "$CTX" statusline)
   assert_eq "$out" "wrapped" "runs the original status line"
-  assert_eq "$(cat "$CTX_HOME/.usage/s1")" "42" "records the floored percentage"
+  assert_eq "$(cat "$CTX_HOME/.usage/s1")" "85000" "records the input tokens of the last request"
+  jq -cn '{session_id: "s1", context_window: {used_percentage: 42.7, context_window_size: 200000}}' | "$CTX" statusline >/dev/null
+  assert_eq "$(cat "$CTX_HOME/.usage/s1")" "85400" "falls back to the percentage of the reported window"
+  jq -cn '{session_id: "s1", context_window: {used_percentage: 42.7}}' | "$CTX" statusline >/dev/null
+  assert_eq "$(cat "$CTX_HOME/.usage/s1")" "427000" "then to the percentage of the default window"
+  jq -cn '{session_id: "s1", context_window: {used_percentage: 42.7}}' | CTX_CONTEXT_WINDOW_TOKENS=200000 "$CTX" statusline >/dev/null
+  assert_eq "$(cat "$CTX_HOME/.usage/s1")" "85400" "or of CTX_CONTEXT_WINDOW_TOKENS"
   out=$(echo 'not json' | "$CTX" statusline)
   assert_eq "$?:$out" "0:wrapped" "garbage still renders the original"
+  assert_eq "$(cat "$CTX_HOME/.usage/s1")" "85400" "and records nothing"
   rm "$CTX_HOME/.statusline-next"
   out=$(jq -cn '{session_id: "s1", context_window: {used_percentage: 50}}' | "$CTX" statusline)
   assert_eq "$?:$out" "0:" "no original: silent"
@@ -729,14 +786,14 @@ test_status_reports_workstream_draft_checkpoint_and_nudge() {
   assert_eq "$(jq -r .last_checkpoint.subject <<<"$out")" "alpha: create" "last checkpoint subject"
   assert_contains "$(jq -r .show <<<"$out")" "# Workstream alpha" "carries the show view"
   assert_eq "$(jq -r '[.workstreams[] | .slug + ":" + .status] | join(" ")' <<<"$out")" "alpha:active beta:paused" "lists every workstream with its status"
-  assert_eq "$(jq -r .context.next_nudge_percent <<<"$out")" "40" "first nudge at 40%"
+  assert_eq "$(jq -r .context.next_nudge_tokens <<<"$out")" "80000" "first nudge at 80k"
   echo '- 2026-10-20 s1: edit' >> "$draft/log.md"
   echo 'x' > "$draft/new.md"
   assert_eq "$("$CTX" status s1 | jq -r '.draft.changed | join(" ")')" "log.md new.md" "names edited and added files"
-  set_usage s1 47
+  set_usage s1 95000
   mkdir -p "$CTX_HOME/.nudges" && echo 0 > "$CTX_HOME/.nudges/s1"
   out=$("$CTX" status s1)
-  assert_eq "$(jq -c .context <<<"$out")" '{"percent":47,"next_nudge_percent":50}' "context use and the next threshold"
+  assert_eq "$(jq -c .context <<<"$out")" '{"tokens":95000,"next_nudge_tokens":120000}' "context use and the next threshold"
   out=$("$CTX" status s2)
   assert_eq "$?:$(jq -c '[.workstream, .draft, .show, .last_checkpoint]' <<<"$out")" "0:[null,null,null,null]" "an unregistered session is all null"
   "$CTX" status 'bad id' >/dev/null 2>&1

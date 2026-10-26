@@ -17,7 +17,7 @@ export type WorkstreamStatus = {
   show: string | null
   draft: { dir: string; changed: string[] } | null
   last_checkpoint: { commit: string; date: string; subject: string } | null
-  context: { percent: number | null; next_nudge_percent: number }
+  context: { tokens: number | null; next_nudge_tokens: number }
   workstreams: WorkstreamRow[]
 }
 
@@ -27,7 +27,7 @@ declare module 'claude-code' {
       status: WorkstreamStatus | null
       problem: string
       note: string
-      percent: number | null
+      tokens: number | null
       expanded: boolean
       isPaneOpen: boolean
     }
