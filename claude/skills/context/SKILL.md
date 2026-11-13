@@ -63,6 +63,14 @@ Source kinds: `sql`, `bq`, `code`, `pr`, `slack`, `datadog`, `jira`, `confluence
 5. Append traps, artifacts and one log line.
 6. Run `ctx checkpoint <session> "<what changed>"`.
 
+## Before a /clear
+
+When the context nudge says to hand off, the checkpoint is the handoff: the next session starts from `ctx show` alone.
+
+1. First in Next steps: what the next session should do, then the skills it should load.
+2. Link specs, PRs, commits and queries; never copy them.
+3. Checkpoint, then tell the user in one line to /clear.
+
 ## When checkpoint fails
 
 - **Merge conflict:** the draft now holds the merged result with `<<<<<<< draft` / `>>>>>>> main` markers. Keep both sides' entries; for `now.md`, write one Now that is true for both. Remove every marker, then checkpoint again.
