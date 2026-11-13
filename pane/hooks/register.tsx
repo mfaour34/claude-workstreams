@@ -158,7 +158,7 @@ export const register: Register = on => {
     const error = await read($, problem)
     const message = await read($, note)
     const isExpanded = await read($, expanded)
-    const used = (await read($, tokens)) ?? current?.context.tokens ?? null
+    const used = current?.context.tokens ?? (await read($, tokens)) ?? null
 
     const section = (key: string, title: string, children: RenderChildren[]) => (
       <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1} gap={1}>

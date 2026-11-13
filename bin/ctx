@@ -1077,9 +1077,9 @@ nudge_message() {
   elif [ "$bucket" -eq 0 ]; then
     echo "Context is at $(kilo "$tokens") tokens, past $passed, where answers start to lose sharpness. Only when the current task is finished or you are waiting on the user, never mid-task, tell the user in one line that a /clear or a fresh session would keep answers sharp."
   elif [ -n "$slug" ]; then
-    echo "Context is at $(kilo "$tokens") tokens, past $passed: a fresh session will now do clearly better work than this one. Finish the step in progress (never stop mid-task) and start nothing new. Then run \`$CTX_BIN checkpoint $session \"<message>\"\` and tell the user in one line to /clear before the next task; the workstream reloads with \`$CTX_BIN show\`."
+    echo "Context is at $(kilo "$tokens") tokens, past $passed: a fresh session will now do clearly better work than this one. Handle the user's request, never stopping mid-task, but take on no follow-up work the user did not ask for. When it is done, hand off: in Next steps of the draft's now.md, put first what the next session should do and which skills it should load, then run \`$CTX_BIN checkpoint $session \"<message>\"\` and tell the user in one line to /clear before the next task; the workstream reloads with \`$CTX_BIN show\`."
   else
-    echo "Context is at $(kilo "$tokens") tokens, past $passed: a fresh session will now do clearly better work than this one. Finish the step in progress (never stop mid-task) and start nothing new. Then tell the user in one line to /clear or start a fresh session before the next task."
+    echo "Context is at $(kilo "$tokens") tokens, past $passed: a fresh session will now do clearly better work than this one. Handle the user's request, never stopping mid-task, but take on no follow-up work the user did not ask for. When it is done, tell the user in one line to /clear or start a fresh session before the next task."
   fi
 }
 

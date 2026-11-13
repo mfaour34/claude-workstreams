@@ -221,7 +221,7 @@ The prompt hook needs the session's context size in tokens:
 - **Terminal CLI:** the status line wrapper records the tokens of the last request (`context_window.current_usage`), or `used_percentage` of the window when that is missing.
 - **Desktop app:** the status line never runs there, so the hook reads the last main-thread token usage from the transcript.
 
-The nudge works in absolute tokens, whatever the window size: answers get worse well before a 1M-token window is full. At 80k the agent is told to checkpoint at the next milestone and to suggest `/clear` once the task is finished. At 120k, and every 40k after, it is told to finish the step in progress, start nothing new, checkpoint and ask for a `/clear` before the next task. Neither ever interrupts a task midway.
+The nudge works in absolute tokens, whatever the window size: answers get worse well before a 1M-token window is full. At 80k the agent is told to checkpoint at the next milestone and to suggest `/clear` once the task is finished. At 120k, and again each time the same gap (40k by default) passes, it is told to handle the request in hand but take on no unrequested follow-ups, then hand off: put what the next session should do and which skills it should load first in Next steps, checkpoint, and ask for a `/clear` before the next task. Neither ever interrupts a task midway.
 
 Set `CTX_NUDGE_TOKENS` (default `80000`) and `CTX_NUDGE_FIRM_TOKENS` (default `120000`) in the environment Claude Code runs in to move the two thresholds. `CTX_CONTEXT_WINDOW_TOKENS` (default `1000000`) is only used to turn a status line percentage into tokens when the status line reports no token counts and no window size.
 

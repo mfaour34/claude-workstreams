@@ -641,8 +641,11 @@ test_hook_prompt_nudges_at_token_thresholds() {
   set_usage s1 120000
   out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
   assert_contains "$out" "Context is at 120k tokens, past 120k" "firm nudge at 120k"
-  assert_contains "$out" "start nothing new" "stops new work"
-  assert_contains "$out" "never stop mid-task" "still finishes the step in progress"
+  assert_contains "$out" "Handle the user's request" "still does what the user just asked"
+  assert_contains "$out" "no follow-up work the user did not ask for" "takes on nothing unrequested"
+  assert_not_contains "$out" "start nothing new" "never tells the agent to refuse the request"
+  assert_contains "$out" "never stopping mid-task" "never interrupts active work"
+  assert_contains "$out" "which skills it should load" "writes a handoff into Next steps"
   assert_contains "$out" "checkpoint s1" "checkpoints before the clear"
   assert_contains "$out" "reloads with" "says the workstream reloads"
   set_usage s1 159999
@@ -657,7 +660,7 @@ test_hook_prompt_skips_to_the_firm_nudge() {
   set_usage s1 130000
   out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
   assert_contains "$out" "Context is at 130k tokens, past 120k" "first nudge above 120k is the firm one"
-  assert_contains "$out" "start nothing new" "with the firm wording"
+  assert_contains "$out" "no follow-up work" "with the firm wording"
 }
 
 test_hook_prompt_nudges_without_a_workstream() {
@@ -670,7 +673,8 @@ test_hook_prompt_nudges_without_a_workstream() {
   assert_not_contains "$out" "checkpoint" "has nothing to checkpoint"
   set_usage s1 125000
   out=$(hook_prompt_input s1 /tmp x | "$CTX" hook prompt | additional_context)
-  assert_contains "$out" "start nothing new" "firm nudge too"
+  assert_contains "$out" "no follow-up work" "firm nudge too"
+  assert_contains "$out" "Handle the user's request" "still does what the user just asked"
   assert_not_contains "$out" "checkpoint" "still nothing to checkpoint"
 }
 
