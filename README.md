@@ -56,7 +56,7 @@ Compaction decides what to keep, and keeps it as prose. A workstream keeps the d
   <img src="assets/ledger.png" width="880" alt="decisions.md keeps a replaced decision, marked replaced by D3 on 2026-10-16. facts.md cites S1, and sources.md says S1 is a read-only SQL query in queries/S1.sql. A checkpoint with a fact that cites no source fails lint and publishes nothing.">
 </p>
 
-Decisions are dated and never deleted: a changed decision gets a new id and the old one is marked `replaced by D3 on 2026-10-16`. Facts cite sources with a kind, a checked date and an exact locator. `ctx lint` enforces all of it on every checkpoint, and also rejects email addresses and IBANs.
+Decisions are dated and never deleted: a changed decision gets a new id and the old one is marked `replaced by D3 on 2026-10-16`; one found wrong with nothing to replace it is marked `withdrawn on 2026-10-16: <reason>`. Facts and decisions cite sources with a kind, a checked date and an exact locator, and `ctx show` flags facts nobody re-checked in 30 days as `(stale)`. Trimming moves old lines and sources nothing active cites to `history.md`; nothing is deleted. `ctx lint` enforces all of it on every checkpoint, and also rejects email addresses and IBANs.
 
 ## Parallel sessions
 
@@ -175,12 +175,13 @@ Context: ~/.claude/context/workstreams/<slug>
 | Command | What it does |
 |---------|--------------|
 | `ctx list` | Index of active and paused workstreams |
-| `ctx show <session>` | Read view: now.md, active decisions and facts, sources, traps, artifacts, last five log lines |
+| `ctx show <session>` | Read view: now.md, active decisions and facts (marked `(stale)` after 30 days unchecked, `CTX_STALE_DAYS`), sources, traps, artifacts, last five log lines |
+| `ctx uncited <session>` | Sources no active decision or fact cites and `now.md` does not name; trimming moves them to `history.md` |
 | `ctx new <slug> "<title>" <session>` | Create a workstream and the session's draft |
 | `ctx register <session> <slug\|none>` | Attach a session (`none`: no context file) |
 | `ctx current <session>` | The session's workstream |
 | `ctx next-id <session> <D\|F\|S>` | Next free decision, fact or source id |
-| `ctx lint <dir>` | Formats, citations, replacements, duplicate ids, conflict markers, personal data, size |
+| `ctx lint <dir>` | Formats, citations (facts and a decision's `Sources:`), replacements, withdrawals with a reason, duplicate ids, conflict markers, personal data, size |
 | `ctx checkpoint <session> "<message>" [slug]` | Merge the draft into the main copy and commit |
 | `ctx archive <slug> <session> [--force]` | Move a finished workstream to `archive/`; refuses while other sessions are attached |
 | `ctx drop <session>` | Delete a session's drafts |
@@ -205,7 +206,7 @@ workstreams/<slug>/
   traps.md        - <what bit us>
   artifacts.md    - <links to PRs, specs, docs>
   log.md          - 2026-10-19 <session>: <one to three lines>
-  history.md      replaced decisions and facts, moved here when trimming
+  history.md      replaced or withdrawn decisions and facts, and uncited sources, moved here when trimming
   queries/S1.sql  long queries cited as sources (never results)
 ```
 

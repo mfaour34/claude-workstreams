@@ -277,7 +277,7 @@ test_lint_names_each_broken_rule() {
   assert_contains "$(lint_after_appending decisions.md '- D3 | yesterday | active | x')" "D3: date must be YYYY-MM-DD" "undated decision"
   assert_contains "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | replaced by D9 on 2026-10-20 | x')" "replaced by missing D9" "dangling replaced-by"
   assert_contains "$(lint_after_appending decisions.md '- D2 | 2026-10-20 | active | again')" "duplicate id D2" "duplicate id"
-  assert_contains "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | superseded | x')" "D3: status must be active or replaced by D<n> on YYYY-MM-DD" "bad status"
+  assert_contains "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | superseded | x')" "D3: status must be active, replaced by D<n> on YYYY-MM-DD, or withdrawn on YYYY-MM-DD: <reason>" "bad status"
   assert_contains "$(lint_after_appending now.md '<<<<<<< draft')" "unresolved merge conflict marker" "conflict marker"
   assert_contains "$(lint_after_appending sources.md '- S3 | rumour | checked 2026-10-20 | x')" "S3: unknown kind rumour" "unknown source kind"
   assert_contains "$(lint_after_appending queries/S2.sql "WHERE email = 'jane.doe@example.com'")" "S2.sql:2: looks like an email address" "email in a query"
@@ -289,6 +289,83 @@ test_lint_names_each_broken_rule() {
   lint_after_appending now.md "$(head -c 31000 /dev/zero | tr '\0' 'x')" >/dev/null
   assert_eq "$?" "1" "over the cap fails"
   assert_contains "$(lint_after_appending now.md "$(head -c 31000 /dev/zero | tr '\0' 'x')")" "over the 30720-byte cap" "names the cap"
+}
+
+test_lint_accepts_withdrawn_decisions_and_facts() {
+  assert_eq "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | withdrawn on 2026-11-18: the vendor dropped the API | Call the vendor API. Sources: S1')" "ok" "withdrawn decision"
+  assert_eq "$(lint_after_appending facts.md '- F2 | checked 2026-10-20 | S2 | withdrawn on 2026-11-18: no longer relevant | The export runs hourly')" "ok" "withdrawn fact"
+}
+
+test_lint_rejects_withdrawn_without_reason() {
+  local out
+  out=$(lint_after_appending facts.md '- F2 | checked 2026-10-20 | S2 | withdrawn on 2026-11-18 | x')
+  assert_eq "$?" "1" "no reason fails"
+  assert_contains "$out" "F2: withdrawn needs a date and a reason: withdrawn on YYYY-MM-DD: <reason>" "names the shape"
+  assert_contains "$(lint_after_appending facts.md '- F2 | checked 2026-10-20 | S2 | withdrawn on 2026-11-18:   | x')" "F2: withdrawn needs a date and a reason" "blank reason"
+  assert_contains "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | withdrawn: wrong | x')" "D3: withdrawn needs a date and a reason" "no date"
+}
+
+test_lint_checks_decision_sources() {
+  local out
+  out=$(lint_after_appending decisions.md '- D3 | 2026-10-20 | active | x. Why: y. Sources: S1, S9')
+  assert_eq "$?" "1" "missing source fails"
+  assert_contains "$out" "D3 cites missing source S9" "names the missing id"
+  assert_contains "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | replaced by D2 on 2026-10-20 | x. Sources: S7.')" "D3 cites missing source S7" "checks replaced decisions too"
+  assert_eq "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | active | x. Sources: user, S2, https://example.com/p/1')" "ok" "user and links are allowed"
+  assert_eq "$(lint_after_appending decisions.md '- D3 | 2026-10-20 | active | x without sources')" "ok" "no Sources tail is allowed"
+}
+
+test_history_holds_sources_cited_from_history() {
+  local dir="$CTX_HOME/fixture"
+  write_valid_workstream "$dir"
+  echo '- F2 | checked 2026-10-20 | S1 | active | The vendor API answers 404' > "$dir/facts.md"
+  echo '- S1 | code | checked 2026-10-19 | origin/main@1a2b3c4:src/x.ts:42' > "$dir/sources.md"
+  {
+    echo '- F1 | checked 2026-10-19 | S1, S2 | replaced by F2 on 2026-10-20 | The vendor API answers 404 for unsplit orders'
+    echo '- F3 | checked 2026-10-19 | S3 | withdrawn on 2026-10-20: wrong table | The export runs hourly'
+    echo '- S2 | sql | checked 2026-10-19 | queries/S2.sql (prod db, read-only)'
+    echo '- S3 | doc | checked 2026-10-19 | https://example.com/runbook'
+  } >> "$dir/history.md"
+  assert_eq "$("$CTX" lint "$dir")" "ok" "history facts cite history sources"
+  echo '- F4 | checked 2026-10-20 | S3 | active | x' >> "$dir/facts.md"
+  assert_contains "$("$CTX" lint "$dir")" "F4 is active but cites S3, which is in history.md; move S3 back to sources.md" "an active fact cannot cite a history source"
+  echo '- D5 | 2026-10-20 | active | x. Sources: S2' >> "$dir/decisions.md"
+  assert_contains "$("$CTX" lint "$dir")" "D5 is active but cites S2, which is in history.md" "nor can an active decision"
+  echo '- 2026-10-20 s1: not an entry' >> "$dir/history.md"
+  assert_contains "$("$CTX" lint "$dir")" "history holds only D, F and S lines" "other lines are still rejected"
+}
+
+test_uncited_lists_sources_trim_can_move() {
+  local draft out
+  draft=$("$CTX" new alpha "Alpha" s1)
+  write_now "$draft" "Waiting on the export (S3)."
+  printf '%s\n' '- D1 | 2026-10-19 | active | x. Why: y. Sources: S2' '- D2 | 2026-10-19 | withdrawn on 2026-10-20: dropped | z. Sources: S5' > "$draft/decisions.md"
+  printf '%s\n' '- F1 | checked 2026-10-19 | S1 | active | a' '- F2 | checked 2026-10-19 | S4 | replaced by F1 on 2026-10-20 | b' > "$draft/facts.md"
+  for n in 1 2 3 4 5 6; do echo "- S$n | doc | checked 2026-10-19 | https://example.com/$n"; done > "$draft/sources.md"
+  out=$("$CTX" uncited s1)
+  assert_eq "$out" "$(printf '%s\n' '- S4 | doc | checked 2026-10-19 | https://example.com/4' '- S5 | doc | checked 2026-10-19 | https://example.com/5' '- S6 | doc | checked 2026-10-19 | https://example.com/6')" "lists only sources no active entry or now.md cites"
+  grep -E '^- (D2|F2) ' "$draft/decisions.md" "$draft/facts.md" -h > "$draft/history.md"
+  printf '%s\n' "$out" >> "$draft/history.md"
+  grep -v -E '^- (D2) ' "$draft/decisions.md" > "$draft/d.tmp" && mv "$draft/d.tmp" "$draft/decisions.md"
+  grep -v -E '^- (F2) ' "$draft/facts.md" > "$draft/f.tmp" && mv "$draft/f.tmp" "$draft/facts.md"
+  grep -v -E '^- S[456] ' "$draft/sources.md" > "$draft/s.tmp" && mv "$draft/s.tmp" "$draft/sources.md"
+  out=$("$CTX" checkpoint s1 "trim")
+  assert_eq "$?" "0" "a trimmed draft checkpoints"
+  assert_eq "$("$CTX" uncited s1)" "" "nothing left to move"
+  assert_contains "$(cat "$CTX_HOME/workstreams/alpha/history.md")" "- S5 | doc" "moved sources are in history"
+}
+
+test_show_marks_stale_facts() {
+  local draft out
+  draft=$("$CTX" new alpha "Alpha" s1)
+  printf '%s\n' '- F1 | checked 2020-01-01 | S1 | active | old fact' "- F2 | checked $TODAY | S1 | active | fresh fact" > "$draft/facts.md"
+  echo '- S1 | doc | checked 2020-01-01 | https://example.com' > "$draft/sources.md"
+  out=$("$CTX" show s1)
+  assert_contains "$out" "| active | old fact (stale)" "marks a fact checked over 30 days ago"
+  assert_not_contains "$out" "fresh fact (stale)" "leaves a fresh fact alone"
+  out=$(CTX_STALE_DAYS=5000 "$CTX" show s1)
+  assert_not_contains "$out" "(stale)" "the threshold can be overridden"
+  assert_eq "$("$CTX" lint "$draft")" "ok" "stale facts do not fail lint"
 }
 
 test_lint_requires_frontmatter_keys() {
