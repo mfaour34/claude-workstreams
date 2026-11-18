@@ -30,6 +30,7 @@ NUDGE_START_PERCENT=40
 NUDGE_STEP_PERCENT=10
 CONTEXT_WINDOW_TOKENS="${CTX_CONTEXT_WINDOW_TOKENS:-1000000}"
 IDLE_DAYS=7
+STALE_DAYS="${CTX_STALE_DAYS:-30}"
 APPEND_FILES="decisions.md facts.md sources.md traps.md artifacts.md log.md history.md"
 TAB="$(printf '\t')"
 STOPWORDS='the|and|for|with|this|that|from|into|what|why|how|can|you|are|was|our|not|but|all|have|need|want|please|check|look|make|let|its|about|does|did|should|would|could|there|here|then|than|also|just|now|new|get|use'
@@ -78,6 +79,46 @@ $2 != "active" && $2 != "paused" { next }
 }
 '
 
+STALE_AWK='
+match($0, /\| *checked [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] *\|/) {
+  checked = substr($0, RSTART, RLENGTH)
+  sub(/^\| *checked /, "", checked)
+  if (substr(checked, 1, 10) < cutoff) $0 = $0 " (stale)"
+}
+{ print }
+'
+
+UNCITED_AWK='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+function cite_words(text,    n, words, i) {
+  gsub(/[^A-Za-z0-9]+/, " ", text)
+  n = split(text, words, " ")
+  for (i = 1; i <= n; i++) if (words[i] ~ /^S[0-9]+$/) cited[words[i]] = 1
+}
+function sources_tail(text,    pos, found) {
+  found = 0
+  while ((pos = index(text, "Sources:")) > 0) { text = substr(text, pos + 8); found = 1 }
+  return found ? text : ""
+}
+FNR == 1 { base_name = FILENAME; sub(/.*\//, "", base_name) }
+base_name == "now.md" { cite_words($0); next }
+base_name == "decisions.md" && /^- D[0-9]+ *\|/ {
+  n = split($0, part, "|")
+  if (n >= 4 && trim(part[3]) == "active") cite_words(sources_tail($0))
+  next
+}
+base_name == "facts.md" && /^- F[0-9]+ *\|/ {
+  n = split($0, part, "|")
+  if (n >= 5 && trim(part[4]) == "active") cite_words(part[3])
+  next
+}
+base_name == "sources.md" && /^- S[0-9]+ *\|/ {
+  id = $2
+  sub(/\|.*/, "", id)
+  if (!(id in cited)) print
+}
+'
+
 LINT_AWK='
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 function here() { return base_name ":" FNR }
@@ -103,9 +144,22 @@ function check_status(id, status, prefix,    parts) {
     replaced_target[parts[3]] = here()
     return
   }
-  fail(here(), id ": status must be active or replaced by " prefix "<n> on YYYY-MM-DD")
+  if (status ~ /^withdrawn/) {
+    if (status !~ /^withdrawn on [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]: *[^ ]/) fail(here(), id ": withdrawn needs a date and a reason: withdrawn on YYYY-MM-DD: <reason>")
+    return
+  }
+  fail(here(), id ": status must be active, replaced by " prefix "<n> on YYYY-MM-DD, or withdrawn on YYYY-MM-DD: <reason>")
 }
-function check_decision(line) {
+function cite(source_id, who, status) {
+  citation[source_id] = here() " " who
+  if (status == "active") active_citation[source_id] = here() " " who
+}
+function sources_tail(text,    pos, found) {
+  found = 0
+  while ((pos = index(text, "Sources:")) > 0) { text = substr(text, pos + 8); found = 1 }
+  return found ? text : ""
+}
+function check_decision(line,    tail, n, words, i) {
   if (line !~ /^- D[0-9]+ *\|/ || !take_fields(substr(line, 3), 4)) {
     fail(here(), "decision must be: - D<n> | YYYY-MM-DD | status | text")
     return
@@ -114,6 +168,10 @@ function check_decision(line) {
   if (!is_date(field[2])) fail(here(), field[1] ": date must be YYYY-MM-DD")
   check_status(field[1], field[3], "D")
   if (field[4] == "") fail(here(), field[1] ": text is empty")
+  tail = sources_tail(field[4])
+  gsub(/[^A-Za-z0-9]+/, " ", tail)
+  n = split(tail, words, " ")
+  for (i = 1; i <= n; i++) if (words[i] ~ /^S[0-9]+$/) cite(words[i], field[1], field[3])
 }
 function check_fact(line,    cited, n, i, source_id) {
   if (line !~ /^- F[0-9]+ *\|/ || !take_fields(substr(line, 3), 5)) {
@@ -129,7 +187,7 @@ function check_fact(line,    cited, n, i, source_id) {
     for (i = 1; i <= n; i++) {
       source_id = trim(cited[i])
       if (source_id !~ /^S[0-9]+$/) fail(here(), field[1] ": " source_id " is not a source id")
-      else citation[source_id] = here() " " field[1]
+      else cite(source_id, field[1], field[4])
     }
   }
   check_status(field[1], field[4], "F")
@@ -163,7 +221,8 @@ base_name == "sources.md" { check_source($0); next }
 base_name == "history.md" {
   if ($0 ~ /^- D/) check_decision($0)
   else if ($0 ~ /^- F/) check_fact($0)
-  else fail(here(), "history holds only D and F lines")
+  else if ($0 ~ /^- S/) { check_source($0); if (field[1] ~ /^S[0-9]+$/) history_source[field[1]] = here() }
+  else fail(here(), "history holds only D, F and S lines")
   next
 }
 base_name == "log.md" {
@@ -181,6 +240,7 @@ END {
   if (frontmatter["status"] != "" && frontmatter["status"] !~ /^(active|paused|done)$/) fail("now.md", "status must be active, paused or done")
   if (frontmatter["updated"] != "" && !is_date(frontmatter["updated"])) fail("now.md", "updated must be YYYY-MM-DD")
   for (id in citation) if (!(id in seen_id)) { split(citation[id], where, " "); fail(where[1], where[2] " cites missing source " id) }
+  for (id in active_citation) if (id in history_source) { split(active_citation[id], where, " "); fail(where[1], where[2] " is active but cites " id ", which is in history.md; move " id " back to sources.md") }
   for (id in replaced_target) if (!(id in seen_id)) fail(replaced_target[id], "replaced by missing " id)
   exit (errors > 0)
 }
@@ -429,6 +489,21 @@ print_section() {
   fi
 }
 
+stale_cutoff() {
+  local days="$STALE_DAYS"
+  case "$days" in ''|*[!0-9]*) days=30 ;; esac
+  date -v-"${days}"d +%Y-%m-%d 2>/dev/null || date -d "$days days ago" +%Y-%m-%d 2>/dev/null
+}
+
+cmd_uncited() {
+  local slug dir
+  slug=$(cmd_current "$1")
+  [ -n "$slug" ] || die "session has no workstream: $1"
+  dir=$(draft_dir "$1" "$slug")
+  [ -d "$dir" ] || dir="$WS_DIR/$slug"
+  awk "$UNCITED_AWK" "$dir/now.md" "$dir/decisions.md" "$dir/facts.md" "$dir/sources.md"
+}
+
 cmd_show() {
   local slug dir
   slug=$(cmd_current "$1")
@@ -441,7 +516,7 @@ cmd_show() {
   echo
   cat "$dir/now.md"
   print_section "Decisions (active)" "$(grep -E '^- D[0-9]+ *\| *[0-9-]+ *\| *active *\|' "$dir/decisions.md")"
-  print_section "Verified facts (active)" "$(grep -E '^- F[0-9]+ *\|[^|]*\|[^|]*\| *active *\|' "$dir/facts.md")"
+  print_section "Verified facts (active)" "$(grep -E '^- F[0-9]+ *\|[^|]*\|[^|]*\| *active *\|' "$dir/facts.md" | awk -v cutoff="$(stale_cutoff)" "$STALE_AWK")"
   print_section "Sources" "$(grep -v '^[[:space:]]*$' "$dir/sources.md")"
   print_section "Traps" "$(grep -v '^[[:space:]]*$' "$dir/traps.md")"
   print_section "Artifacts" "$(grep -v '^[[:space:]]*$' "$dir/artifacts.md")"
@@ -1223,6 +1298,10 @@ main() {
       [ $# -ge 1 ] || die "usage: ctx show <session>"
       cmd_show "$1"
       ;;
+    uncited)
+      [ $# -ge 1 ] || die "usage: ctx uncited <session>"
+      cmd_uncited "$1"
+      ;;
     next-id) cmd_next_id "$@" ;;
     lint)
       [ $# -ge 1 ] || die "usage: ctx lint <dir>"
@@ -1243,7 +1322,7 @@ main() {
     update) cmd_update ;;
     push) cmd_push ;;
     pull) cmd_pull ;;
-    *) die "usage: ctx list | render | new | register | current | show | next-id | lint | checkpoint | archive | drop | candidates | status | doctor | update | push | pull | hook start | hook prompt | statusline" ;;
+    *) die "usage: ctx list | render | new | register | current | show | uncited | next-id | lint | checkpoint | archive | drop | candidates | status | doctor | update | push | pull | hook start | hook prompt | statusline" ;;
   esac
 }
 
